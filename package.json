@@ -1,0 +1,61 @@
+{
+  "name": "@hpp-io/aa-sdk",
+  "version": "0.1.0",
+  "description": "HPP Account Abstraction SDK — Kernel v3.3 (EIP-7702 / factory) + Smart Sessions on the HPP bundler",
+  "keywords": [
+    "hpp",
+    "account-abstraction",
+    "erc-4337",
+    "eip-7702",
+    "kernel",
+    "smart-sessions",
+    "paymaster",
+    "erc-7677",
+    "viem"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hpp-io/hpp-aa-sdk.git"
+  },
+  "homepage": "https://github.com/hpp-io/hpp-aa-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/hpp-io/hpp-aa-sdk/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "e2e": "npm run build && node examples/e2e-sepolia.mjs"
+  },
+  "peerDependencies": {
+    "viem": "^2.56.0"
+  },
+  "dependencies": {
+    "@rhinestone/module-sdk": "^0.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "viem": "^2.56.3"
+  }
+}

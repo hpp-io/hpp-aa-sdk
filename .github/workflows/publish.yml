@@ -1,0 +1,36 @@
+name: Publish to npm
+
+# Tag push `vX.Y.Z` → publish the package.json version (must match the tag).
+# Required repo secret: NPM_TOKEN — npm automation token with publish access to @hpp-io.
+# Provenance enabled (id-token: write); the repo must be public for the provenance link to resolve.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run: { description: 'npm publish --dry-run', type: boolean, default: false }
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22', registry-url: 'https://registry.npmjs.org', cache: 'npm' }
+      - name: Verify tag matches package.json
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PKG=$(node -p "require('./package.json').version"); TAG=${GITHUB_REF_NAME#v}
+          [ "$PKG" = "$TAG" ] || { echo "::error::package.json $PKG != tag $TAG"; exit 1; }
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: npm publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env: { NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}' }
+      - name: npm publish (dry-run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run --access public
+        env: { NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}' }

@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# local key files (test sponsor, pm test account)
+.*.json
+!.github
