@@ -1,6 +1,6 @@
 {
   "name": "@hpp-io/aa-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "HPP Account Abstraction SDK — Kernel v3.3 (EIP-7702 / factory) + Smart Sessions on the HPP bundler",
   "keywords": [
     "hpp",
