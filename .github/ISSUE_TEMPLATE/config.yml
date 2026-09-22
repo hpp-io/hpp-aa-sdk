@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Docs — Smart Accounts on HPP
+    url: https://docs.hpp.io/x402/smart-accounts/overview
+    about: Quickstart, sessions, gas sponsorship, reference
