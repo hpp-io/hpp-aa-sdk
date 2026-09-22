@@ -111,7 +111,28 @@ factory account automatically. HPP is a custom chain for these vendors: register
 
 Both modes share everything after that: batching, sessions, revocation. Force a mode with `mode: "factory"`.
 
-## What the SDK handles for you (the six HPP pitfalls)
+## Paying with x402 / signing EIP-712 (EIP-3009, Permit, Permit2)
+
+Pass the account itself as the signer — it produces ERC-1271 signatures:
+
+```ts
+import { x402Client, x402HTTPClient } from "@x402/core/client";
+import { ExactEvmScheme } from "@x402/evm/exact/client";
+
+const user = await createHppAccount({ owner, bundlerUrl: HPP_AA_ENDPOINTS[181228] });
+const client = new x402HTTPClient(new x402Client().register("eip155:181228", new ExactEvmScheme(user.account)));
+const payload = await client.createPaymentPayload(paymentRequired);   // account signs, no UserOp, no gas
+const res = await fetch(url, { method: "POST", headers: { ...client.encodePaymentSignatureHeader(payload) }, body });
+```
+
+A smart account cannot sign these payloads with a plain owner signature: the token sees code at the
+address and calls `isValidSignature` instead of `ecrecover`. **This includes 7702-delegated EOAs** —
+once delegated, the address has code and a raw owner signature is rejected (`FiatTokenV2: invalid
+signature`). `user.account.signTypedData()` wraps the hash in the account's Kernel domain and prefixes
+the root-validator selector; `signErc1271TypedData` / `signErc1271Message` expose the same thing
+directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|factory`).
+
+## What the SDK handles for you (the seven HPP pitfalls)
 
 1. **Fees** — `rundler_getUserOperationGasPrice`, not viem's estimator (priority fee is 0 on HPP).
 2. **preVerificationGas** — +15 % buffer by default (`pvgBufferPercent`); HPP gas is ~98 % L1 data.
@@ -119,6 +140,7 @@ Both modes share everything after that: batching, sessions, revocation. Force a 
 4. **7702 UserOp hash / signature** — root signs EIP-191(userOpHash), verified by Kernel against `address(this)`.
 5. **Kernel validator install** — Smart Sessions `initData` includes the `execute` selector; installed inside the first UserOp.
 6. **Session nonce** — nonce key type `0x01` (module-sdk's helper emits `0x00`, which routes to the root key).
+7. **ERC-1271 signatures** — payload hash wrapped in the account's Kernel domain + root-validator byte, so EIP-3009 / Permit / x402 verify against the account (a raw owner signature does not).
 
 ## Layout
 
@@ -127,6 +149,7 @@ Both modes share everything after that: batching, sessions, revocation. Force a 
 - `bundler.ts` — `createHppBundlerClient` (fees, pVG buffer, ERC-7677 paymaster hook)
 - `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
 - `sessions.ts` — `buildSession`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
+- `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
 - `index.ts` — `HppAccount` / `createHppAccount`, `createHppSessionClient`
 
 ## Tests

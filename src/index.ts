@@ -16,6 +16,7 @@ export * from "./chains.js";
 export * from "./addresses.js";
 export * from "./kernel.js";
 export * from "./owner.js";
+export * from "./erc1271.js";
 export * from "./bundler.js";
 export * from "./account.js";
 export * from "./sessions.js";

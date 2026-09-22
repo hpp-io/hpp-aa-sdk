@@ -10,7 +10,8 @@ import { ADDRESSES } from "./addresses.js";
 import {
   ROOT_NONCE_KEY, encodeKernelExecute, kernelFactoryAbi, kernelInitializeData, withLane,
 } from "./kernel.js";
-import { canSignAuthorization, ownerAddress, ownerSignMessage, ownerSignTypedData, signHashPrefixed, type Owner } from "./owner.js";
+import { signErc1271Message, signErc1271TypedData } from "./erc1271.js";
+import { canSignAuthorization, ownerAddress, signHashPrefixed, type Owner } from "./owner.js";
 import type { ChainClient } from "./types.js";
 
 export type KernelAccountMode =
@@ -76,8 +77,9 @@ export async function toKernelAccount(opts: ToKernelAccountOptions): Promise<Ker
       const hash = getUserOperationHash({ chainId, entryPointAddress: ADDRESSES.entryPoint07, entryPointVersion: "0.7", userOperation: { ...uo, sender: address, signature: "0x" } as never });
       return signHashPrefixed(owner, hash);
     },
-    // ERC-1271 for the 7702 root is a plain EOA signature checked against address(this).
-    signMessage: async ({ message }) => ownerSignMessage(owner, message),
-    signTypedData: async (td) => ownerSignTypedData(owner, td),
+    // ERC-1271: Kernel checks the payload hash wrapped in the account's own domain, so the owner
+    // signature alone is not enough — see erc1271.ts. Applies to 7702 accounts too (they have code).
+    signMessage: async ({ message }) => signErc1271Message({ client, account: address, owner, message }),
+    signTypedData: async (td) => signErc1271TypedData({ client, account: address, owner, typedData: td as never }),
   });
 }
