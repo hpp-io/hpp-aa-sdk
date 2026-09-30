@@ -3,6 +3,7 @@ import {
   createBundlerClient, createPaymasterClient, estimateUserOperationGas,
   type BundlerClient, type PaymasterClient, type SmartAccount,
 } from "viem/account-abstraction";
+import type { HppPaymaster, HppPaymasterContext } from "./paymaster.js";
 
 export type HppBundlerOptions = {
   chain: Chain;
@@ -18,7 +19,7 @@ export type HppBundlerOptions = {
    *  - PaymasterClient → bring your own
    *  - undefined → user pays gas
    */
-  paymaster?: true | string | PaymasterClient;
+  paymaster?: true | string | PaymasterClient | HppPaymaster;
   /**
    * Sent as the 4th param of pm_getPaymasterStubData / pm_getPaymasterData.
    * HPP paymaster: `{ policyId, anchorId? }` — policyId is your app's configured policy; anchorId is the
@@ -32,7 +33,7 @@ export type HppBundlerOptions = {
 
 type GasPrice = { suggested: { maxFeePerGas: Hex; maxPriorityFeePerGas: Hex } };
 
-export type HppPaymasterContext = { policyId: string; anchorId?: string } & Record<string, unknown>;
+export type { HppPaymasterContext };
 
 /** Shorthand accepted by createHppAccount: `{ policyId, anchorId }` means "same URL as the bundler, with this context". */
 export type PaymasterOption = true | string | PaymasterClient | ({ url?: string } & HppPaymasterContext);
@@ -51,10 +52,10 @@ export function resolvePaymasterOption(p: PaymasterOption | undefined): { paymas
  */
 export function createHppBundlerClient(opts: HppBundlerOptions): BundlerClient<Transport, Chain, SmartAccount | undefined> {
   const { chain, bundlerUrl, client, account, pvgBufferPercent = 15, paymasterContext } = opts;
-  const paymaster =
+  const paymaster = (
     opts.paymaster === true ? createPaymasterClient({ transport: http(bundlerUrl) })
     : typeof opts.paymaster === "string" ? createPaymasterClient({ transport: http(opts.paymaster) })
-    : opts.paymaster;
+    : opts.paymaster) as PaymasterClient | undefined; // an HppPaymaster object exposes the two ERC-7677 actions viem needs
 
   const base = createBundlerClient({
     account,
