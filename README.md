@@ -50,22 +50,57 @@ Revoke: `await user.revokeSession(permissionId)`.
 UserOperation was mined but its execution reverted (`success: false`). They *do* throw when the bundler or paymaster rejects the
 request before inclusion (validation revert, policy denial, budget exhausted). Check `success` after every call.
 
-## Gas sponsorship (ERC-7677)
+## Gas sponsorship (ERC-7677) — free, then USDC.e
 
 The HPP paymaster shares the bundler URL and takes `{ policyId, anchorId? }` as the 7677 context. `policyId` is your
 app's policy (issued by HPP ops); `anchorId` is the per-user entitlement your **backend** attaches for the logged-in
-user — never something the end user types. Rejections arrive as JSON-RPC `-32000` with `data.reason`
-(`policy_required`, `anchor_unknown`, `budget_exceeded`, …). Signatures are short-lived (policy default 5 min): send right away.
+user — never something the end user types.
 
 ```ts
 const user = await createHppAccount({ owner, chain: hppSepolia, bundlerUrl, paymaster: { policyId, anchorId } });
 await user.sendCalls([...]);        // account holds 0 ETH; the paymaster's deposit pays
 ```
 
-`paymaster` also accepts `true` (same URL, no context), a separate URL, or a viem `PaymasterClient`. The
-`createHppSessionClient` agent side takes the same option, so agent UserOps can be sponsored under the same policy.
-Note: the stub (`pm_getPaymasterStubData`) is not policy-checked; the decision happens at `pm_getPaymasterData`,
-i.e. inside `sendCalls`.
+A policy is one of three kinds (HPP ops set it):
+
+| `fee_mode` | who pays | what the user needs |
+|---|---|---|
+| `sponsored` | HPP (VerifyingPaymaster) | nothing |
+| `token` | the user, in USDC.e, charged after execution (SingletonPaymaster postOp) | USDC.e balance + a one-time approve |
+| `sponsored_then_token` | free for the first N ops per anchor, then USDC.e | approve while ops are still free |
+
+The SDK handles the switch: the same `sendCalls` call goes to the free paymaster while free ops remain and to the
+ERC-20 paymaster afterwards. Every `SendResult` carries `fee`:
+
+```ts
+const r = await user.sendCalls([...]);
+r.fee   // { mode: "sponsored", freeRemaining: 2 }
+        // { mode: "token", token, symbol: "USDC.e", decimals: 6, exchangeRate, maxToken, charged }   ← charged = actual USDC.e taken
+```
+
+**Show the fee before signing** — `quoteFee` runs the stub + gas estimate and returns the upper bound the user will be asked to hold:
+
+```ts
+const q = await user.quoteFee(calls);
+if (q.mode === "token") ui.show(`up to ${formatUnits(q.maxToken, q.decimals)} ${q.symbol} (actual cost is charged)`);
+```
+
+**Approve once, while it is free** — the ERC-20 paymaster pulls USDC.e with `transferFrom`, so the account must approve it.
+Fold the approve into an onboarding op (it costs the user nothing under `sponsored_then_token`):
+
+```ts
+await user.ensureFeeAllowance({ calls: [enableSessionsCall(...)] });   // approve + your calls in ONE free op; null if not needed
+```
+
+**Rejections** arrive as JSON-RPC `-32000` with `data.reason`. Two of them mean "start over from the stub" and the SDK retries
+them for you (`free_exhausted`: another op took the last free slot; `fee_quote_stale`: the exchange rate moved > 3% since the quote).
+The rest need the user or the app: `fee_balance_insufficient`, `fee_allowance_missing`, `would_revert` (the op would leave the
+account unable to pay — e.g. it moves the USDC.e out), `sender_blocked` / `anchor_blocked` (repeated failed ops), plus the policy
+ones (`policy_required`, `anchor_unknown`, `budget_exceeded`, …). Signatures are short-lived (policy default 5 min): send right away.
+
+`paymaster` also accepts `true` (same URL, no context), a separate URL, or a viem `PaymasterClient` — then there is no `fee`
+detail and no re-quote. `createHppSessionClient` takes the same option, so agent UserOps are charged under the same policy
+(gas comes from the account's USDC.e, independent of the session's spend limit).
 
 ## Who pays for setup? (`sponsor`)
 
@@ -132,7 +167,43 @@ signature`). `user.account.signTypedData()` wraps the hash in the account's Kern
 the root-validator selector; `signErc1271TypedData` / `signErc1271Message` expose the same thing
 directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|factory`).
 
-## What the SDK handles for you (the seven HPP pitfalls)
+## Agents paying x402 without holding funds (ERC-7710 delegations)
+
+A session lets an agent send UserOps; it cannot sign an x402 (EIP-3009) payment, because that
+signature is checked through the account's ERC-1271 and never passes the session's policies. For
+payments use a **payment delegation** instead: the account signs a delegation to the agent's key
+with on-chain caps (MetaMask delegation-framework enforcers, redeployed on HPP), and the HPP
+facilitator redeems it per payment through the account — the agent's key never holds USDC.e or ETH.
+
+```ts
+// wallet side — one UserOp once (installs the DelegationManager executor), then signatures only
+const grant = await user.grantPaymentDelegation({
+  agent: agentKey.address, token: USDCe,
+  limit: parseUnits("5", 6),            // or period: { amount, seconds } for a rolling cap
+  validUntil: BigInt(now + 30 * 86400), maxCalls: 100n,
+});
+// give the agent grant.permissionContext; keep grant.delegation to revoke:
+await user.revokePaymentDelegation(grant.delegation);   // one UserOp, effective immediately
+
+// agent side — per 402 whose extra.assetTransferMethod === "erc7710"
+const leaf = buildPaymentRedelegation(chain.id, agentKey.address, {
+  parentPermissionContext: grant.permissionContext,
+  facilitatorAddresses: requirements.extra.facilitatorAddresses, token, amount, payTo,
+});
+const payload = await signPaymentRedelegation({ chainId: chain.id, agent: agentKey, leaf, parentPermissionContext: grant.permissionContext });
+// → x402 payload { delegationManager, permissionContext, delegator } for the exact scheme
+```
+
+`@metamask/x402` + `@metamask/smart-accounts-kit` produce the same bytes: register HPP's contracts
+with `overrideDeployedEnvironment(chain.id, "1.3.0", erc7710Environment(chain.id))` and use
+`x402Erc7710Client({ delegationProvider: createx402DelegationProvider({ account: agentKey, parentPermissionContext: grant.permissionContext, ... }) })`.
+
+What the caps enforce, on-chain: total or per-period USDC.e, expiry, max redemptions (grant); exact
+amount, exact recipient, only HPP facilitator keys may redeem, short expiry (each payment). Full
+example: `examples/x402-erc7710.mjs` against a facilitator that advertises `erc7710` on `/supported`.
+Only works with sellers settled by the HPP facilitator (other facilitators do not implement ERC-7710).
+
+## What the SDK handles for you (the nine HPP pitfalls)
 
 1. **Fees** — `rundler_getUserOperationGasPrice`, not viem's estimator (priority fee is 0 on HPP).
 2. **preVerificationGas** — +15 % buffer by default (`pvgBufferPercent`); HPP gas is ~98 % L1 data.
@@ -141,6 +212,8 @@ directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|
 5. **Kernel validator install** — Smart Sessions `initData` includes the `execute` selector; installed inside the first UserOp.
 6. **Session nonce** — nonce key type `0x01` (module-sdk's helper emits `0x00`, which routes to the root key).
 7. **ERC-1271 signatures** — payload hash wrapped in the account's Kernel domain + root-validator byte, so EIP-3009 / Permit / x402 verify against the account (a raw owner signature does not).
+| ⑧ | ERC-20 paymaster ops need a real `paymasterPostOpGasLimit` (postOp does the `transferFrom`); viem leaves it 0 without a stub | the HPP paymaster stub returns 120k and the SDK keeps it |
+| ⑨ | A nonce lane's first use costs more verification gas (cold nonce slot) — reusing another lane's estimate fails `AA26` in the bundler's pre-sign simulation | `sendCalls` estimates per op; if you build ops by hand, estimate each lane |
 
 ## Layout
 
@@ -150,6 +223,7 @@ directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|
 - `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
 - `sessions.ts` — `buildSession`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
 - `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
+- `erc7710.ts` — payment delegations: `buildPaymentDelegation`, `signDelegationAsAccount`, `buildPaymentRedelegation`, `signPaymentRedelegation`, `encodeDelegations`, `erc7710Environment`
 - `index.ts` — `HppAccount` / `createHppAccount`, `createHppSessionClient`
 
 ## Tests
