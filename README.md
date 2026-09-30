@@ -132,6 +132,42 @@ signature`). `user.account.signTypedData()` wraps the hash in the account's Kern
 the root-validator selector; `signErc1271TypedData` / `signErc1271Message` expose the same thing
 directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|factory`).
 
+## Agents paying x402 without holding funds (ERC-7710 delegations)
+
+A session lets an agent send UserOps; it cannot sign an x402 (EIP-3009) payment, because that
+signature is checked through the account's ERC-1271 and never passes the session's policies. For
+payments use a **payment delegation** instead: the account signs a delegation to the agent's key
+with on-chain caps (MetaMask delegation-framework enforcers, redeployed on HPP), and the HPP
+facilitator redeems it per payment through the account — the agent's key never holds USDC.e or ETH.
+
+```ts
+// wallet side — one UserOp once (installs the DelegationManager executor), then signatures only
+const grant = await user.grantPaymentDelegation({
+  agent: agentKey.address, token: USDCe,
+  limit: parseUnits("5", 6),            // or period: { amount, seconds } for a rolling cap
+  validUntil: BigInt(now + 30 * 86400), maxCalls: 100n,
+});
+// give the agent grant.permissionContext; keep grant.delegation to revoke:
+await user.revokePaymentDelegation(grant.delegation);   // one UserOp, effective immediately
+
+// agent side — per 402 whose extra.assetTransferMethod === "erc7710"
+const leaf = buildPaymentRedelegation(chain.id, agentKey.address, {
+  parentPermissionContext: grant.permissionContext,
+  facilitatorAddresses: requirements.extra.facilitatorAddresses, token, amount, payTo,
+});
+const payload = await signPaymentRedelegation({ chainId: chain.id, agent: agentKey, leaf, parentPermissionContext: grant.permissionContext });
+// → x402 payload { delegationManager, permissionContext, delegator } for the exact scheme
+```
+
+`@metamask/x402` + `@metamask/smart-accounts-kit` produce the same bytes: register HPP's contracts
+with `overrideDeployedEnvironment(chain.id, "1.3.0", erc7710Environment(chain.id))` and use
+`x402Erc7710Client({ delegationProvider: createx402DelegationProvider({ account: agentKey, parentPermissionContext: grant.permissionContext, ... }) })`.
+
+What the caps enforce, on-chain: total or per-period USDC.e, expiry, max redemptions (grant); exact
+amount, exact recipient, only HPP facilitator keys may redeem, short expiry (each payment). Full
+example: `examples/x402-erc7710.mjs` against a facilitator that advertises `erc7710` on `/supported`.
+Only works with sellers settled by the HPP facilitator (other facilitators do not implement ERC-7710).
+
 ## What the SDK handles for you (the seven HPP pitfalls)
 
 1. **Fees** — `rundler_getUserOperationGasPrice`, not viem's estimator (priority fee is 0 on HPP).
@@ -150,6 +186,7 @@ directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|
 - `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
 - `sessions.ts` — `buildSession`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
 - `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
+- `erc7710.ts` — payment delegations: `buildPaymentDelegation`, `signDelegationAsAccount`, `buildPaymentRedelegation`, `signPaymentRedelegation`, `encodeDelegations`, `erc7710Environment`
 - `index.ts` — `HppAccount` / `createHppAccount`, `createHppSessionClient`
 
 ## Tests

@@ -9,6 +9,7 @@ import { createHppBundlerClient, resolvePaymasterOption, type PaymasterOption } 
 import { toKernelAccount, type KernelAccountMode, type KernelSmartAccount } from "./account.js";
 import { hppSepolia } from "./chains.js";
 import { installSmartSessionsCall, kernelAbi, kernelDelegationCode, kernelFactoryAbi, type Call } from "./kernel.js";
+import { buildPaymentDelegation, delegationHash, encodeDelegations, erc7710Config, installDelegationExecutorCall, isDelegationDisabled, isDelegationExecutorInstalled, revokeDelegationCall, signDelegationAsAccount, type Delegation, type PaymentDelegationSpec, type PaymentGrant } from "./erc7710.js";
 import { canSignAuthorization, isLocalAccount, ownerAddress, signAuthorization, type Owner } from "./owner.js";
 import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, toSessionAccount, type SessionSmartAccount, type SessionSpec } from "./sessions.js";
 
@@ -17,6 +18,7 @@ export * from "./addresses.js";
 export * from "./kernel.js";
 export * from "./owner.js";
 export * from "./erc1271.js";
+export * from "./erc7710.js";
 export * from "./bundler.js";
 export * from "./account.js";
 export * from "./sessions.js";
@@ -187,8 +189,43 @@ export class HppAccount {
   isSessionEnabled(permissionId: Hex): Promise<boolean> {
     return isSessionEnabled(this.client, this.address, permissionId);
   }
+
+  // ---- ERC-7710 payment delegations (agent pays x402 from this account, on-chain caps) ----
+
+  /** True once HPP's DelegationManager is installed as executor on this account. */
+  hasDelegationExecutor(): Promise<boolean> {
+    return isDelegationExecutorInstalled(this.client, this.address, erc7710Config(this.chain.id).delegationManager);
+  }
+
+  /** One UserOp, once per account. No-op (returns null) when already installed. */
+  async installDelegationExecutor(): Promise<SendResult | null> {
+    if (await this.hasDelegationExecutor()) return null;
+    return this.sendCalls([installDelegationExecutorCall(this.address, erc7710Config(this.chain.id).delegationManager)]);
+  }
+
+  /**
+   * Grant an agent a payment delegation: a signature, no UserOp (the executor is installed first
+   * if missing — that one is a UserOp). Give the agent `permissionContext`; keep `delegation`
+   * to revoke. Funds never leave this account until a payment is redeemed, and each
+   * redemption is capped by the caveats you set here.
+   */
+  async grantPaymentDelegation(spec: PaymentDelegationSpec): Promise<PaymentGrant & { install: SendResult | null }> {
+    const install = await this.installDelegationExecutor();
+    const unsigned = buildPaymentDelegation(this.chain.id, this.address, spec);
+    const delegation = await signDelegationAsAccount({ client: this.client, chainId: this.chain.id, account: this.address, owner: this.owner, delegation: unsigned });
+    return { delegation, delegationHash: delegationHash(delegation), permissionContext: encodeDelegations([delegation]), delegationManager: erc7710Config(this.chain.id).delegationManager, chainId: this.chain.id, install };
+  }
+
+  /** Disable a delegation this account signed. One UserOp; the facilitator rejects it from the next block. */
+  revokePaymentDelegation(delegation: Delegation): Promise<SendResult> {
+    return this.sendCalls([revokeDelegationCall(erc7710Config(this.chain.id).delegationManager, delegation)], { setup: false });
+  }
+
+  isPaymentDelegationRevoked(delegation: Delegation): Promise<boolean> {
+    return isDelegationDisabled(this.client, erc7710Config(this.chain.id).delegationManager, delegation);
+  }
 }
-type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled";
+type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
 
 export const createHppAccount = HppAccount.create;
 

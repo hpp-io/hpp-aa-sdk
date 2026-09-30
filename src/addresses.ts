@@ -20,6 +20,26 @@ export const TOKENS: Record<number, { USDCe: Address }> = {
   181228: { USDCe: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
 };
 
+/**
+ * ERC-7710 delegation contracts (MetaMask delegation-framework v1.3.0, redeployed by HPP,
+ * CREATE2 salt `hpp-x402-7710-poc`). Agents pay x402 from the user's account under these caveats;
+ * the HPP facilitator accepts only this DelegationManager and this enforcer set.
+ * Sepolia = PoC deployment (owner = deployer EOA); mainnet lands with a multisig owner.
+ */
+export const ERC7710: Record<number, { delegationManager: Address; enforcers: Record<
+  "ERC20TransferAmountEnforcer" | "ERC20PeriodTransferEnforcer" | "RedeemerEnforcer" | "AllowedCalldataEnforcer" | "TimestampEnforcer" | "LimitedCallsEnforcer", Address> }> = {
+  181228: {
+    delegationManager: "0x20248e5193B1Ef08298812AdA31F4B0D75e99652",
+    enforcers: {
+      ERC20TransferAmountEnforcer: "0x8b76d04EbB53082D258e653ddb49423ce142c546",
+      ERC20PeriodTransferEnforcer: "0x70d21Cd7DA2238536f5b1041e3c99B6C018242cb",
+      RedeemerEnforcer: "0x7914D7940E7b6A2F8579FaB1c4c02CB4370700f8",
+      AllowedCalldataEnforcer: "0x31c407faAFbc69868b4d8822B1a761214A04080b",
+      TimestampEnforcer: "0xa5FB0F520984Ece260b9248D4Ae6A2f6350a4850",
+      LimitedCallsEnforcer: "0x5392D307606FD66a756FD0dA4B5BCa39C0AB4Dfe",
+    },
+  },
+};
 /** Chains where the AA stack (EntryPoint v0.7, Kernel, Smart Sessions) is live. */
 export const AA_LIVE_CHAINS: readonly number[] = [181228];
 
