@@ -1,18 +1,19 @@
 import {
-  createPublicClient, createWalletClient, encodeFunctionData, http, maxUint256, parseAbi,
+  createPublicClient, createWalletClient, http, parseAbi,
   type Address, type Chain, type Hex, type LocalAccount, type PublicClient, type Transport, type WalletClient,
 } from "viem";
 import type { BundlerClient, SmartAccount, UserOperationReceipt } from "viem/account-abstraction";
 import type { SignedAuthorization } from "viem";
 import { ADDRESSES, AA_LIVE_CHAINS } from "./addresses.js";
 import { createHppBundlerClient, resolvePaymasterOption, type PaymasterOption } from "./bundler.js";
-import { createHppPaymaster, feeInfoOf, paymasterReason, REQUOTE_REASONS, type FeeInfo, type HppFeeQuote, type HppPaymaster } from "./paymaster.js";
+import { createHppPaymaster, feeInfoOf, type FeeInfo, type HppFeeQuote, type HppPaymaster } from "./paymaster.js";
+import { approveCall, planFee, sendWithFee, type FeeCtx } from "./fee.js";
 import { toKernelAccount, type KernelAccountMode, type KernelSmartAccount } from "./account.js";
 import { hppSepolia } from "./chains.js";
 import { installSmartSessionsCall, kernelAbi, kernelDelegationCode, kernelFactoryAbi, type Call } from "./kernel.js";
 import { buildPaymentDelegation, delegationHash, encodeDelegations, erc7710Config, installDelegationExecutorCall, isDelegationDisabled, isDelegationExecutorInstalled, revokeDelegationCall, signDelegationAsAccount, type Delegation, type PaymentDelegationSpec, type PaymentGrant } from "./erc7710.js";
 import { canSignAuthorization, isLocalAccount, ownerAddress, signAuthorization, type Owner } from "./owner.js";
-import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, toSessionAccount, type SessionSmartAccount, type SessionSpec } from "./sessions.js";
+import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, sessionUsage, toSessionAccount, type SessionSmartAccount, type SessionSpec, type SessionUsage } from "./sessions.js";
 
 export * from "./chains.js";
 export * from "./addresses.js";
@@ -25,6 +26,7 @@ export * from "./account.js";
 export * from "./sessions.js";
 export * from "./types.js";
 export * from "./paymaster.js";
+export * from "./fee.js";
 
 export type CreateHppAccountOptions = {
   owner: Owner;
@@ -43,9 +45,7 @@ export type CreateHppAccountOptions = {
 
 export type SendResult = { userOpHash: Hex; txHash: Hex; success: boolean; receipt: UserOperationReceipt; /** who paid the gas and, in token mode, what was charged */ fee: FeeInfo };
 
-const erc20Abi = parseAbi(["function approve(address,uint256) returns (bool)", "function allowance(address,address) view returns (uint256)"]);
-/** Below this allowance `ensureFeeAllowance` re-approves (half of max — never exhausted in practice). */
-const ALLOWANCE_FLOOR = maxUint256 / 2n;
+const erc20Abi = parseAbi(["function allowance(address,address) view returns (uint256)"]);
 
 /** Build the HPP paymaster client when the option carries an HPP context; other options pass through to viem. */
 function hppPaymasterFor(bundlerUrl: string, option: PaymasterOption | undefined) {
@@ -55,13 +55,6 @@ function hppPaymasterFor(bundlerUrl: string, option: PaymasterOption | undefined
   return { paymaster: hpp, hpp };
 }
 
-/** Send with the L3 re-quote protocol: free_exhausted / fee_quote_stale mean "start over from the stub" (design 12 §14). */
-async function sendWithRequote(bundler: BundlerClient<Transport, Chain, SmartAccount | undefined>, account: SmartAccount, calls: Call[], attempts = 2): Promise<Hex> {
-  for (let i = 0; ; i++) {
-    try { return await bundler.sendUserOperation({ account, calls }); }
-    catch (e) { const r = paymasterReason(e); if (r && REQUOTE_REASONS.has(r) && i < attempts) continue; throw e; }
-  }
-}
 async function finish(bundler: BundlerClient<Transport, Chain, SmartAccount | undefined>, pm: HppPaymaster | undefined, sender: Address, userOpHash: Hex): Promise<SendResult> {
   const receipt = await bundler.waitForUserOperationReceipt({ hash: userOpHash });
   return { userOpHash, txHash: receipt.receipt.transactionHash, success: receipt.success, receipt, fee: feeInfoOf(pm, sender, receipt, userOpHash) };
@@ -197,7 +190,7 @@ export class HppAccount {
       if (!opts.allowInitCode) throw new Error("account not deployed — call ensureReady() first (or pass allowInitCode once a staked factory is live)");
     }
     const all = await this.withSetup(calls, opts.setup ?? true);
-    const userOpHash = await sendWithRequote(this.bundler, this.account, all);
+    const userOpHash = await sendWithFee(this.feeCtx(), all);
     const result = await finish(this.bundler, this.paymaster, this.address, userOpHash);
     if (result.success && all !== calls) this.smartSessionsInstalled = true;
     return result;
@@ -205,49 +198,40 @@ export class HppAccount {
   private async withSetup(calls: Call[], setup: boolean): Promise<Call[]> {
     return setup && !(await this.hasSmartSessions()) ? [installSmartSessionsCall(this.address), ...calls] : calls;
   }
-
-  /**
-   * Ask the HPP paymaster how the next op would be paid, before signing anything.
-   * sponsored → free ops left; token → token, exchangeRate and `maxToken` (the upper bound the user must hold and approve).
-   * Same `setup` semantics as sendCalls so the quote reflects the op you will actually send. No side effects.
-   */
-  async quoteFee(calls: Call[], opts: { setup?: boolean } = {}): Promise<HppFeeQuote | { mode: "self" }> {
-    if (!this.paymaster) return { mode: "self" };
-    const all = await this.withSetup(calls, opts.setup ?? true);
-    // empty calls = "which mode / token would apply?" — stub only (Kernel cannot encode an empty batch, and there is nothing to estimate)
-    const callData: Hex = all.length ? await this.account.encodeCalls(all) : "0x";
-    const nonce = await this.account.getNonce();
-    const gp = (await this.bundler.request({ method: "rundler_getUserOperationGasPrice" as never, params: [] as never })) as { suggested: { maxFeePerGas: Hex; maxPriorityFeePerGas: Hex } };
-    const maxFeePerGas = BigInt(gp.suggested.maxFeePerGas), maxPriorityFeePerGas = BigInt(gp.suggested.maxPriorityFeePerGas);
-    const stub = await this.paymaster.getPaymasterStubData({
-      sender: this.address, nonce, callData, maxFeePerGas, maxPriorityFeePerGas, signature: await this.account.getStubSignature(),
-      chainId: this.chain.id, entryPointAddress: this.account.entryPoint.address,
-    } as never);
-    const q = this.paymaster.lastQuote(this.address);
-    if (!q || q.mode !== "token" || all.length === 0) return q ?? { mode: "self" };
-    const est = await this.bundler.estimateUserOperationGas({
-      account: this.account, calls: all, maxFeePerGas, maxPriorityFeePerGas,
-      paymaster: stub.paymaster, paymasterData: stub.paymasterData, paymasterVerificationGasLimit: stub.paymasterVerificationGasLimit, paymasterPostOpGasLimit: stub.paymasterPostOpGasLimit,
-    } as never);
-    const pmVer = est.paymasterVerificationGasLimit ?? stub.paymasterVerificationGasLimit ?? 0n, pmPost = est.paymasterPostOpGasLimit ?? stub.paymasterPostOpGasLimit ?? 0n;
-    const maxCost = (est.verificationGasLimit + est.callGasLimit + est.preVerificationGas + pmVer + pmPost) * maxFeePerGas;
-    return { ...q, maxToken: (maxCost * q.exchangeRate) / 10n ** 18n };
+  private feeCtx(): FeeCtx {
+    return { bundler: this.bundler, account: this.account, client: this.client, paymaster: this.paymaster, chain: this.chain, sender: this.address };
   }
 
   /**
-   * Make sure the ERC-20 paymaster may pull the fee token from this account. Call it while ops are still free
-   * (onboarding) — pass `calls` to fold the approve into that same op. Returns null when nothing was needed
-   * (policy never charges tokens, or allowance already set).
+   * Ask the HPP paymaster how the next op would be paid, before signing anything.
+   * sponsored → free ops left; token → token, exchangeRate and `maxToken` (the most this op can be charged).
+   * Same `setup` semantics as sendCalls, and priced with the fee approve sendCalls would add, so the quote reflects
+   * the op you will actually send. No side effects.
    */
-  async ensureFeeAllowance(opts: { calls?: Call[]; setup?: boolean } = {}): Promise<SendResult | null> {
+  async quoteFee(calls: Call[], opts: { setup?: boolean } = {}): Promise<HppFeeQuote | { mode: "self" }> {
+    if (!this.paymaster) return { mode: "self" };
+    const plan = await planFee(this.feeCtx(), await this.withSetup(calls, opts.setup ?? true));
+    if (!plan.quote) return { mode: "self" };
+    return plan.quote.mode === "token" && plan.maxToken !== undefined ? { ...plan.quote, maxToken: plan.maxToken } : plan.quote;
+  }
+
+  /**
+   * Pre-approve the ERC-20 paymaster for `amount` of the fee token (default: 1 token). Optional — sendCalls already
+   * approves each token-charged op's fee inside that op. Use this only to cover the next few ops up front, e.g. while
+   * ops are still free. Pass `calls` to fold the approve into that same op. Returns null when nothing was needed
+   * (policy never charges tokens, or allowance already ≥ amount).
+   */
+  async ensureFeeAllowance(opts: { calls?: Call[]; setup?: boolean; amount?: bigint } = {}): Promise<SendResult | null> {
     if (!this.paymaster) return null;
     const q = await this.quoteFee([], { setup: false });
     const spender = q.mode === "token" ? q.paymaster : q.mode === "sponsored" ? q.erc20Paymaster : undefined;
-    const token = q.mode === "token" ? q.token : q.mode === "sponsored" ? q.feeToken?.token : undefined;
-    if (!spender || !token) return null;
+    const fee = q.mode === "token" ? q : q.mode === "sponsored" ? q.feeToken : undefined;
+    if (!spender || !fee) return opts.calls?.length ? this.sendCalls(opts.calls, { setup: opts.setup }) : null;
+    const { token, decimals } = fee;
+    const amount = opts.amount ?? 10n ** BigInt(decimals);
     const allowance = await this.client.readContract({ address: token, abi: erc20Abi, functionName: "allowance", args: [this.address, spender] });
-    if (allowance >= ALLOWANCE_FLOOR) return opts.calls?.length ? this.sendCalls(opts.calls, { setup: opts.setup }) : null;
-    return this.sendCalls([{ to: token, data: encodeFunctionData({ abi: erc20Abi, functionName: "approve", args: [spender, maxUint256] }) }, ...(opts.calls ?? [])], { setup: opts.setup });
+    if (allowance >= amount) return opts.calls?.length ? this.sendCalls(opts.calls, { setup: opts.setup }) : null;
+    return this.sendCalls([approveCall(token, spender, amount), ...(opts.calls ?? [])], { setup: opts.setup });
   }
 
   /** Grant an agent a scoped session. One owner signature; the agent then acts without prompts. */
@@ -263,6 +247,11 @@ export class HppAccount {
 
   isSessionEnabled(permissionId: Hex): Promise<boolean> {
     return isSessionEnabled(this.client, this.address, permissionId);
+  }
+
+  /** Operations and fee approvals a session has used (see `sessionUsage`). */
+  sessionUsage(permissionId: Hex, opts: { feeToken?: Address } = {}): Promise<SessionUsage> {
+    return sessionUsage(this.client, this.address, permissionId, opts);
   }
 
   // ---- ERC-7710 payment delegations (agent pays x402 from this account, on-chain caps) ----
@@ -300,7 +289,7 @@ export class HppAccount {
     return isDelegationDisabled(this.client, erc7710Config(this.chain.id).delegationManager, delegation);
   }
 }
-type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
+type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
 
 export const createHppAccount = HppAccount.create;
 
@@ -334,7 +323,7 @@ export async function createHppSessionClient(opts: CreateSessionClientOptions): 
   return {
     account, bundler, client, paymaster: hpp,
     async sendCalls(calls: Call[]): Promise<SendResult> {
-      const userOpHash = await sendWithRequote(bundler, account, calls);
+      const userOpHash = await sendWithFee({ bundler, account, client, paymaster: hpp, chain, sender: opts.account }, calls);
       return finish(bundler, hpp, opts.account, userOpHash);
     },
   };
