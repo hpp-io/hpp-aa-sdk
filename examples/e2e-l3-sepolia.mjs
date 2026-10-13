@@ -60,6 +60,9 @@ const ra = await agentClient.sendCalls([agentTransfer]);
 let delta = b - (await bal(user.address)) - 1000n, left = await usdcAllowance(PM);
 check("agent op after free ops: token-charged from the owner's USDC.e, approve inlined (0 < allowance left < per-call cap)", ra.success && ra.fee.mode === "token" && ra.fee.charged === delta && delta > 0n && left > 0n && left < PER_CALL, `charged ${formatUnits(delta, 6)} left ${formatUnits(left, 6)} tx ${ra.txHash}`);
 
+const su = await user.sessionUsage(permissionId, { feeToken: USDC });
+check("sessionUsage reads the agent's ops and fee approvals on-chain", su.ops?.used === 1n && su.ops.limit === 20n && su.feeApproved && su.feeApproved.used === left + delta && su.feeApproved.limit === TOTAL, JSON.stringify(su, (_, x) => (typeof x === "bigint" ? x.toString() : x)));
+
 // 4. owner paid op: quote then send; the allowance stays bounded (never unlimited)
 const q1 = await user.quoteFee([transfer1], { setup: false });
 check("quoteFee (paid) = token with maxToken > 0", q1.mode === "token" && q1.maxToken > 0n && q1.symbol === "USDC.e", q1.mode === "token" ? `maxToken ${formatUnits(q1.maxToken, 6)} rate ${q1.exchangeRate}` : JSON.stringify(q1));

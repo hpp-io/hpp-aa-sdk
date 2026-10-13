@@ -112,6 +112,9 @@ await user.grantSession({
 
 `perCall` must cover one op's approve (1.5× its max fee); `total` bounds the gas a misbehaving agent can burn.
 
+`user.sessionUsage(permissionId, { feeToken: USDC })` reads what a session has used from its on-chain policies:
+`{ ops: { used, limit }, feeApproved: { used, limit } }` (fee approvals are an upper bound on the gas it paid).
+
 **Rejections** arrive as JSON-RPC `-32000` with `data.reason`. Three of them mean "start over from the stub" and the SDK retries
 them for you (`free_exhausted`: another op took the last free slot; `fee_quote_stale`: the exchange rate moved > 3% since the quote;
 `fee_allowance_missing`: gas was re-estimated above the approve's headroom). The rest need the user or the app:
@@ -243,7 +246,7 @@ Only works with sellers settled by the HPP facilitator (other facilitators do no
 - `bundler.ts` — `createHppBundlerClient` (fees, pVG buffer, ERC-7677 paymaster hook)
 - `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
 - `fee.ts` — fee approve inside the paying op: `planFee`, `sendWithFee`, `feeApprovalCall`, `feeApproveAction`
-- `sessions.ts` — `buildSession`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
+- `sessions.ts` — `buildSession`, `sessionUsage`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
 - `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
 - `erc7710.ts` — payment delegations: `buildPaymentDelegation`, `signDelegationAsAccount`, `buildPaymentRedelegation`, `signPaymentRedelegation`, `encodeDelegations`, `erc7710Environment`
 - `index.ts` — `HppAccount` / `createHppAccount`, `createHppSessionClient`

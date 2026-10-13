@@ -1,11 +1,11 @@
-import { keccak256, toFunctionSelector, toHex, type Address, type Hex, type LocalAccount } from "viem";
+import { encodePacked, keccak256, parseAbi, toFunctionSelector, toHex, type Address, type Hex, type LocalAccount } from "viem";
 import type { ChainClient } from "./types.js";
 import { readContract } from "viem/actions";
 import { entryPoint07Abi, getUserOperationHash, toSmartAccount, type SmartAccount, type SmartAccountImplementation } from "viem/account-abstraction";
 import {
   SmartSessionMode, encodeSmartSessionSignature, encodeValidationData, getEnableSessionsAction, getOwnableValidator,
   getOwnableValidatorMockSignature, getPermissionId, getRemoveSessionAction, getSpendingLimitsPolicy, getSudoPolicy,
-  getTimeFramePolicy, getUsageLimitPolicy, getValueLimitPolicy, type Session,
+  getTimeFramePolicy, getUsageLimitPolicy, getValueLimitPolicy, GLOBAL_CONSTANTS, type Session,
 } from "@rhinestone/module-sdk";
 import { ADDRESSES } from "./addresses.js";
 import { encodeKernelExecute, sessionNonceKey, withLane, type Call } from "./kernel.js";
@@ -102,6 +102,48 @@ export async function isSessionEnabled(client: ChainClient, account: Address, pe
     functionName: "isPermissionEnabled",
     args: [permissionId, account],
   });
+}
+
+// ── Reading a session's policy state ──
+// Smart Sessions keys each policy's per-account state by a ConfigId: keccak(account ‖ permissionId) for user-op
+// policies, keccak(account ‖ keccak(permissionId ‖ actionId)) for action policies, actionId = keccak(target ‖ selector).
+// (Checked against live state on HPP Sepolia — module-sdk exposes the getters but not these ids.)
+
+const actionId = (target: Address, selector: Hex) => keccak256(encodePacked(["address", "bytes4"], [target, selector]));
+export const userOpPolicyConfigId = (account: Address, permissionId: Hex) => keccak256(encodePacked(["address", "bytes32"], [account, permissionId]));
+export const actionPolicyConfigId = (account: Address, permissionId: Hex, target: Address, selector: Hex) =>
+  keccak256(encodePacked(["address", "bytes32"], [account, keccak256(encodePacked(["bytes32", "bytes32"], [permissionId, actionId(target, selector)]))]));
+
+const usageLimitAbi = parseAbi(["function usageLimitConfigs(bytes32,address,address) view returns (uint128 limit, uint128 used)"]);
+const universalActionAbi = parseAbi(["function actionConfigs(bytes32,address,address) view returns (uint256 valueLimitPerUse, (uint256 length, (uint8 condition, uint64 offset, bool isLimited, bytes32 ref, (uint256 limit, uint256 used) usage)[16] rules) paramRules)"]);
+const APPROVE = toFunctionSelector("approve(address,uint256)");
+
+export type SessionUsage = {
+  /** Operations used / allowed (`usageLimit`); null when the session has none. */
+  ops: { used: bigint; limit: bigint } | null;
+  /** Fee approvals used / allowed in token units (`feeApproveAction` total); null when the session has none. */
+  feeApproved: { used: bigint; limit: bigint } | null;
+};
+
+/**
+ * What a session has used so far, read from its on-chain policies. `feeApproved` is the sum the agent approved to the
+ * paymaster — an upper bound on the gas it has paid (the paymaster charges the actual cost, the rest stays approved).
+ */
+export async function sessionUsage(client: ChainClient, account: Address, permissionId: Hex, opts: { feeToken?: Address } = {}): Promise<SessionUsage> {
+  const ops = await readContract(client, {
+    address: GLOBAL_CONSTANTS.USAGE_LIMIT_POLICY_ADDRESS as Address, abi: usageLimitAbi, functionName: "usageLimitConfigs",
+    args: [userOpPolicyConfigId(account, permissionId), ADDRESSES.smartSessions, account],
+  }).catch(() => null);
+  let feeApproved: SessionUsage["feeApproved"] = null;
+  if (opts.feeToken) {
+    const c = await readContract(client, {
+      address: GLOBAL_CONSTANTS.UNIVERSAL_ACTION_POLICY_ADDRESS as Address, abi: universalActionAbi, functionName: "actionConfigs",
+      args: [actionPolicyConfigId(account, permissionId, opts.feeToken, APPROVE), ADDRESSES.smartSessions, account],
+    }).catch(() => null);
+    const rule = c && c[1].length > 0n ? c[1].rules.slice(0, Number(c[1].length)).find((r) => r.isLimited) : undefined;
+    if (rule) feeApproved = { used: rule.usage.used, limit: rule.usage.limit };
+  }
+  return { ops: ops && ops[0] > 0n ? { used: ops[1], limit: ops[0] } : null, feeApproved };
 }
 
 export type ToSessionAccountOptions = {

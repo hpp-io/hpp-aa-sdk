@@ -13,7 +13,7 @@ import { hppSepolia } from "./chains.js";
 import { installSmartSessionsCall, kernelAbi, kernelDelegationCode, kernelFactoryAbi, type Call } from "./kernel.js";
 import { buildPaymentDelegation, delegationHash, encodeDelegations, erc7710Config, installDelegationExecutorCall, isDelegationDisabled, isDelegationExecutorInstalled, revokeDelegationCall, signDelegationAsAccount, type Delegation, type PaymentDelegationSpec, type PaymentGrant } from "./erc7710.js";
 import { canSignAuthorization, isLocalAccount, ownerAddress, signAuthorization, type Owner } from "./owner.js";
-import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, toSessionAccount, type SessionSmartAccount, type SessionSpec } from "./sessions.js";
+import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, sessionUsage, toSessionAccount, type SessionSmartAccount, type SessionSpec, type SessionUsage } from "./sessions.js";
 
 export * from "./chains.js";
 export * from "./addresses.js";
@@ -249,6 +249,11 @@ export class HppAccount {
     return isSessionEnabled(this.client, this.address, permissionId);
   }
 
+  /** Operations and fee approvals a session has used (see `sessionUsage`). */
+  sessionUsage(permissionId: Hex, opts: { feeToken?: Address } = {}): Promise<SessionUsage> {
+    return sessionUsage(this.client, this.address, permissionId, opts);
+  }
+
   // ---- ERC-7710 payment delegations (agent pays x402 from this account, on-chain caps) ----
 
   /** True once HPP's DelegationManager is installed as executor on this account. */
@@ -284,7 +289,7 @@ export class HppAccount {
     return isDelegationDisabled(this.client, erc7710Config(this.chain.id).delegationManager, delegation);
   }
 }
-type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
+type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
 
 export const createHppAccount = HppAccount.create;
 

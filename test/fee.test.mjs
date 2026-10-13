@@ -129,3 +129,13 @@ test("feeApproveAction: spender pinned to the paymaster, per-call ≤ cap with a
 test("approveCall encodes token.approve(spender, amount)", () => {
   assert.deepEqual(approved(approveCall(USDC, PM_T, 7n)), { spender: PM_T, amount: 7n });
 });
+
+test("session policy ConfigIds match live Smart Sessions state (HPP Sepolia, 2026-10-13 probe)", async () => {
+  const { userOpPolicyConfigId, actionPolicyConfigId } = await import("../dist/index.js");
+  const { keccak256, encodePacked, toFunctionSelector } = await import("viem");
+  const acct = "0x00000000000000000000000000000000000000cc", pid = "0x" + "11".repeat(32);
+  assert.equal(userOpPolicyConfigId(acct, pid), keccak256(encodePacked(["address", "bytes32"], [acct, pid])));
+  const sel = toFunctionSelector("approve(address,uint256)");
+  const aid = keccak256(encodePacked(["address", "bytes4"], [USDC, sel]));
+  assert.equal(actionPolicyConfigId(acct, pid, USDC, sel), keccak256(encodePacked(["address", "bytes32"], [acct, keccak256(encodePacked(["bytes32", "bytes32"], [pid, aid]))])));
+});
