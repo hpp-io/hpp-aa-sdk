@@ -66,8 +66,8 @@ A policy is one of three kinds (HPP ops set it):
 | `fee_mode` | who pays | what the user needs |
 |---|---|---|
 | `sponsored` | HPP (VerifyingPaymaster) | nothing |
-| `token` | the user, in USDC.e, charged after execution (SingletonPaymaster postOp) | USDC.e balance + a one-time approve |
-| `sponsored_then_token` | free for the first N ops per anchor, then USDC.e | approve while ops are still free |
+| `token` | the user, in USDC.e, charged after execution (SingletonPaymaster postOp) | USDC.e balance |
+| `sponsored_then_token` | free for the first N ops per anchor, then USDC.e | USDC.e balance once the free ops are used |
 
 The SDK handles the switch: the same `sendCalls` call goes to the free paymaster while free ops remain and to the
 ERC-20 paymaster afterwards. Every `SendResult` carries `fee`:
@@ -85,22 +85,43 @@ const q = await user.quoteFee(calls);
 if (q.mode === "token") ui.show(`up to ${formatUnits(q.maxToken, q.decimals)} ${q.symbol} (actual cost is charged)`);
 ```
 
-**Approve once, while it is free** — the ERC-20 paymaster pulls USDC.e with `transferFrom`, so the account must approve it.
-Fold the approve into an onboarding op (it costs the user nothing under `sponsored_then_token`):
+**The fee approve rides in the op that pays** — the ERC-20 paymaster pulls USDC.e with `transferFrom` in postOp, *after*
+the op's calls have run. So when an op will be charged in USDC.e and the allowance doesn't cover it, `sendCalls` puts
+`approve(paymaster, 1.5 × this op's max fee)` first in that same op — one signature, no separate approve step, and no
+standing unlimited allowance. The leftover covers about half the next op's fee, and the next op tops it up only when it falls short.
+Ops that are sponsored, and revokes (always sponsored), carry no approve.
+
+`ensureFeeAllowance({ amount, calls })` remains for apps that want to pre-approve a fixed amount up front (default 1 token).
+
+**Agents pay their gas from the user's account too** — a session agent can't approve on the user's behalf unless the
+session allows it. Add `feeApproveAction` to the session: an approve whose spender is pinned to the paymaster, capped
+per call and in total by Smart Sessions' Universal Action Policy (so it can't be used to move funds), and not counted
+against the session's `spend` limit:
 
 ```ts
-await user.ensureFeeAllowance({ calls: [enableSessionsCall(...)] });   // approve + your calls in ONE free op; null if not needed
+await user.grantSession({
+  signer: agent.address,
+  actions: [
+    { target: USDC, signature: "transfer(address,uint256)" },
+    feeApproveAction({ token: USDC, paymaster: ERC20_PAYMASTER, perCall: 300_000n, total: 5_000_000n }), // ≤ 0.30 per op, ≤ 5 USDC.e of gas
+  ],
+  spend: [{ token: USDC, limit: 10_000_000n }],   // what the agent may pay out — fees are separate
+  usageLimit: 100n,
+});
 ```
 
-**Rejections** arrive as JSON-RPC `-32000` with `data.reason`. Two of them mean "start over from the stub" and the SDK retries
-them for you (`free_exhausted`: another op took the last free slot; `fee_quote_stale`: the exchange rate moved > 3% since the quote).
-The rest need the user or the app: `fee_balance_insufficient`, `fee_allowance_missing`, `would_revert` (the op would leave the
-account unable to pay — e.g. it moves the USDC.e out), `sender_blocked` / `anchor_blocked` (repeated failed ops), plus the policy
+`perCall` must cover one op's approve (1.5× its max fee); `total` bounds the gas a misbehaving agent can burn.
+
+**Rejections** arrive as JSON-RPC `-32000` with `data.reason`. Three of them mean "start over from the stub" and the SDK retries
+them for you (`free_exhausted`: another op took the last free slot; `fee_quote_stale`: the exchange rate moved > 3% since the quote;
+`fee_allowance_missing`: gas was re-estimated above the approve's headroom). The rest need the user or the app:
+`fee_balance_insufficient` (also when the op itself would move out the USDC.e needed for its fee), `would_revert` (the op's
+execution reverts), `sender_blocked` / `anchor_blocked` (repeated failed ops), plus the policy
 ones (`policy_required`, `anchor_unknown`, `budget_exceeded`, …). Signatures are short-lived (policy default 5 min): send right away.
 
 `paymaster` also accepts `true` (same URL, no context), a separate URL, or a viem `PaymasterClient` — then there is no `fee`
 detail and no re-quote. `createHppSessionClient` takes the same option, so agent UserOps are charged under the same policy
-(gas comes from the account's USDC.e, independent of the session's spend limit).
+(gas comes from the account's USDC.e through `feeApproveAction`, independent of the session's spend limit).
 
 ## Who pays for setup? (`sponsor`)
 
@@ -221,6 +242,7 @@ Only works with sellers settled by the HPP facilitator (other facilitators do no
 - `addresses.ts` — canonical addresses, `TOKENS`
 - `bundler.ts` — `createHppBundlerClient` (fees, pVG buffer, ERC-7677 paymaster hook)
 - `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
+- `fee.ts` — fee approve inside the paying op: `planFee`, `sendWithFee`, `feeApprovalCall`, `feeApproveAction`
 - `sessions.ts` — `buildSession`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
 - `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
 - `erc7710.ts` — payment delegations: `buildPaymentDelegation`, `signDelegationAsAccount`, `buildPaymentRedelegation`, `signPaymentRedelegation`, `encodeDelegations`, `erc7710Environment`

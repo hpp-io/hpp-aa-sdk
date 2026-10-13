@@ -20,6 +20,12 @@ export type ActionSpec = {
   signature?: string;
   /** Action-level policies. Defaults to sudo (any args) plus any matching `spend` limit. */
   policies?: PolicyRef[];
+  /**
+   * false = don't attach the session's `spend` limit for this token to this action. For actions that call the token
+   * but move nothing out — e.g. `feeApproveAction`, whose approve to the paymaster is bounded by its own policy and
+   * would otherwise be counted against the spending limit as if it were a transfer.
+   */
+  spendLimit?: false;
 };
 
 export type SessionSpec = {
@@ -51,7 +57,7 @@ export function buildSession(spec: SessionSpec, chainId: number): BuiltSession {
     const selector = a.selector ?? (a.signature ? toFunctionSelector(a.signature) : undefined);
     if (!selector) throw new Error(`action ${a.target}: selector or signature required`);
     const policies: PolicyRef[] = [...(a.policies ?? [])];
-    const limit = spendByToken.get(a.target.toLowerCase());
+    const limit = a.spendLimit === false ? undefined : spendByToken.get(a.target.toLowerCase());
     if (limit !== undefined) policies.push(getSpendingLimitsPolicy([{ token: a.target, limit }]));
     if (policies.length === 0) policies.push(getSudoPolicy());
     return { actionTarget: a.target, actionTargetSelector: selector, actionPolicies: policies.map((p) => ({ policy: p.address, initData: p.initData })) };
