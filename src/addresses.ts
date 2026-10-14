@@ -18,6 +18,7 @@ export const ADDRESSES = {
 /** Per-chain token addresses. */
 export const TOKENS: Record<number, { USDCe: Address }> = {
   181228: { USDCe: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
+  190415: { USDCe: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
 };
 
 /**
@@ -40,8 +41,11 @@ export const ERC7710: Record<number, { delegationManager: Address; enforcers: Re
     },
   },
 };
-/** Chains where the AA stack (EntryPoint v0.7, Kernel, Smart Sessions) is live. */
-export const AA_LIVE_CHAINS: readonly number[] = [181228];
+/**
+ * Chains where the AA stack (EntryPoint v0.7/v0.8, Kernel, Smart Sessions) is live.
+ * Mainnet since 2026-10-14. ERC-7710 is not on mainnet yet (see ERC7710 above).
+ */
+export const AA_LIVE_CHAINS: readonly number[] = [181228, 190415];
 
 /** `execute(bytes32,bytes)` — the only selector Smart Sessions is allowed to call on Kernel. */
 export const KERNEL_EXECUTE_SELECTOR: Hex = "0xe9ae5c53";
