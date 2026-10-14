@@ -120,7 +120,11 @@ export class HppAccount {
   async ensureDelegated(opts: { sponsor?: Sponsor } = {}): Promise<Hex | null> {
     if (this.mode !== "7702" || (await this.isReady())) return null;
     if (!canSignAuthorization(this.owner)) throw new Error("owner cannot sign EIP-7702 authorizations — use mode: 'factory'");
-    const nonce = await this.client.getTransactionCount({ address: this.address });
+    // EIP-7702: when the EOA sends its own type-4 tx, its nonce is bumped before the authorization is checked,
+    // so the authorization must carry nonce + 1. With nonce + 0 the tx still succeeds but the delegation is
+    // silently skipped (seen on HPP mainnet 2026-10-14). A separate sponsor leaves the EOA nonce untouched.
+    const selfSent = !opts.sponsor || (!isRemoteSponsor(opts.sponsor) && opts.sponsor.account?.address.toLowerCase() === this.address.toLowerCase());
+    const nonce = (await this.client.getTransactionCount({ address: this.address })) + (selfSent ? 1 : 0);
     const auth = await signAuthorization(this.owner, { contractAddress: ADDRESSES.kernelV33, chainId: this.chain.id, nonce });
     let hash: Hex;
     if (opts.sponsor && isRemoteSponsor(opts.sponsor)) {
@@ -135,6 +139,8 @@ export class HppAccount {
     }
     const r = await this.client.waitForTransactionReceipt({ hash });
     if (r.status !== "success") throw new Error(`delegation tx reverted: ${hash}`);
+    // An invalid authorization does not revert the tx — confirm the delegation actually landed.
+    if (!(await this.isReady())) throw new Error(`delegation tx ${hash} mined but the authorization was not applied`);
     return hash;
   }
 
