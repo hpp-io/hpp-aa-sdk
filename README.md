@@ -3,7 +3,8 @@
 HPP Account Abstraction SDK. Kernel v3.3 smart accounts on HPP (EIP-7702 or factory), Smart Sessions for agents,
 and the HPP bundler — with the chain-specific pitfalls handled inside the library.
 
-> Status: **HPP Sepolia only** (chain 181228). Gas is paid by the account until the HPP paymaster is live.
+> Status: **HPP Sepolia** (chain 181228) and **HPP Mainnet** (chain 190415, since 0.3.1). Pass `chain: hppMainnet`
+> with the mainnet bundler URL. ERC-7710 payment delegations are Sepolia-only for now.
 
 ## Quickstart — 3 steps
 
