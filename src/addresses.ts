@@ -25,7 +25,7 @@ export const TOKENS: Record<number, { USDCe: Address }> = {
  * ERC-7710 delegation contracts (MetaMask delegation-framework v1.3.0, redeployed by HPP,
  * CREATE2 salt `hpp-x402-7710-poc`). Agents pay x402 from the user's account under these caveats;
  * the HPP facilitator accepts only this DelegationManager and this enforcer set.
- * Sepolia = PoC deployment (owner = deployer EOA); mainnet lands with a multisig owner.
+ * Sepolia = PoC deployment (owner = deployer EOA); mainnet owner = HPP AA operations Safe.
  */
 export const ERC7710: Record<number, { delegationManager: Address; enforcers: Record<
   "ERC20TransferAmountEnforcer" | "ERC20PeriodTransferEnforcer" | "RedeemerEnforcer" | "AllowedCalldataEnforcer" | "TimestampEnforcer" | "LimitedCallsEnforcer", Address> }> = {
@@ -40,10 +40,23 @@ export const ERC7710: Record<number, { delegationManager: Address; enforcers: Re
       LimitedCallsEnforcer: "0x5392D307606FD66a756FD0dA4B5BCa39C0AB4Dfe",
     },
   },
+  // Mainnet (2026-10-15): enforcers at the same CREATE2 addresses; DelegationManager differs because its owner
+  // (constructor arg) is the HPP AA operations Safe, not the Sepolia PoC deployer.
+  190415: {
+    delegationManager: "0xEf6d2D01af8e6313f9D544DC2AaC6a438590c2A9",
+    enforcers: {
+      ERC20TransferAmountEnforcer: "0x8b76d04EbB53082D258e653ddb49423ce142c546",
+      ERC20PeriodTransferEnforcer: "0x70d21Cd7DA2238536f5b1041e3c99B6C018242cb",
+      RedeemerEnforcer: "0x7914D7940E7b6A2F8579FaB1c4c02CB4370700f8",
+      AllowedCalldataEnforcer: "0x31c407faAFbc69868b4d8822B1a761214A04080b",
+      TimestampEnforcer: "0xa5FB0F520984Ece260b9248D4Ae6A2f6350a4850",
+      LimitedCallsEnforcer: "0x5392D307606FD66a756FD0dA4B5BCa39C0AB4Dfe",
+    },
+  },
 };
 /**
  * Chains where the AA stack (EntryPoint v0.7/v0.8, Kernel, Smart Sessions) is live.
- * Mainnet since 2026-10-14. ERC-7710 is not on mainnet yet (see ERC7710 above).
+ * Mainnet since 2026-10-14 (ERC-7710 since 2026-10-15).
  */
 export const AA_LIVE_CHAINS: readonly number[] = [181228, 190415];
 

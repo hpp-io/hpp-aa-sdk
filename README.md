@@ -4,7 +4,7 @@ HPP Account Abstraction SDK. Kernel v3.3 smart accounts on HPP (EIP-7702 or fact
 and the HPP bundler — with the chain-specific pitfalls handled inside the library.
 
 > Status: **HPP Sepolia** (chain 181228) and **HPP Mainnet** (chain 190415, since 0.3.1). Pass `chain: hppMainnet`
-> with the mainnet bundler URL. ERC-7710 payment delegations are Sepolia-only for now.
+> with the mainnet bundler URL. ERC-7710 payment delegations work on both (0.3.3+).
 
 ## Quickstart — 3 steps
 
