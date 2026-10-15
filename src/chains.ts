@@ -12,7 +12,7 @@ export const hppSepolia = defineChain({
   testnet: true,
 });
 
-/** HPP Mainnet. AA stack live since 2026-10-14 (ERC-7710 delegation not yet). */
+/** HPP Mainnet. AA stack live since 2026-10-14, ERC-7710 delegation since 2026-10-15. */
 export const hppMainnet = defineChain({
   id: 190415,
   name: "HPP Mainnet",
