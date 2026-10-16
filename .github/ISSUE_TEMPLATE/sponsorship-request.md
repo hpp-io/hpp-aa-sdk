@@ -1,18 +1,28 @@
 ---
-name: Gas sponsorship request (HPP Sepolia)
-about: Request a paymaster policy so your app's users can transact with zero ETH
+name: Gas sponsorship request
+about: Request a paymaster policy so your app's users can transact without holding ETH (HPP Sepolia sandbox or HPP Mainnet)
 title: "[sponsorship] <app name>"
 labels: sponsorship
 ---
 
-<!-- HPP Sepolia only for now. You will receive a `policyId` and a way to issue per-user anchors. -->
+<!--
+This issue is PUBLIC. Include only what you are happy to share.
+We reply here and send your policyId and anchor details PRIVATELY — never post them in this issue.
+See https://docs.hpp.io/smart-accounts/gas-sponsorship
+-->
 
-**App name and one-line description**
+**Network**
+- [ ] HPP Sepolia — sandbox, for development
+- [ ] HPP Mainnet
 
-**Contracts / functions to sponsor** (address + function signature; "any" if unrestricted)
+**App name, website, and what users do with it**
 
-**Expected users per month and operations per user** (a first payment + an agent session + the agent's first payment = 3 operations)
+**Fee mode** (`sponsored` / `token` / `sponsored_then_token` with how many free operations per user)
 
-**How users sign in** (embedded wallet such as Privy / browser wallet / server keys) — determines whether you use the 7702 or factory path
+**Contracts / functions to sponsor** (address + function signature)
 
-**Contact** (GitHub handle or email)
+**Expected users per month and operations per user**
+
+**How users sign in** (embedded wallet such as Privy / browser wallet / server keys)
+
+**Contact** (GitHub handle; we will ask for a private channel to send the IDs)
