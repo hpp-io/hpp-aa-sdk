@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Docs — Smart Accounts on HPP
-    url: https://docs.hpp.io/x402/smart-accounts/overview
-    about: Quickstart, sessions, gas sponsorship, reference
+    url: https://docs.hpp.io/smart-accounts
+    about: Quickstart, gas sponsorship, agent permissions, reference, errors & FAQ
+  - name: HPP Smart Wallet help (users)
+    url: https://t.me/aergoofficial
+    about: Questions about using the wallet at aa.hpp.io — ask in HPP Telegram
