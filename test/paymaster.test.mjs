@@ -6,7 +6,7 @@ const EP = "0x0000000071727De22E5E9d8BAf0edAc6f37da032", PM_V = "0x686f803a2c8c7
 const USDC = "0x401eCb1D350407f13ba348573E5630B83638E30D", SENDER = "0x33019d8BE92937016371E22C710ABB71fACde773";
 const op = { sender: SENDER, nonce: 5n, callData: "0x", maxFeePerGas: 19_050_000n, maxPriorityFeePerGas: 0n, signature: "0x", chainId: 181228, entryPointAddress: EP };
 
-// fetch 목: 요청을 기록하고 정해진 응답을 돌려준다
+// fetch mock: records requests and returns canned responses
 function mockFetch(responses) {
   const calls = [];
   const f = async (_url, init) => { const body = JSON.parse(init.body); calls.push(body); const r = responses[body.method] ?? {}; return { json: async () => ({ jsonrpc: "2.0", id: 1, ...(typeof r === "function" ? r(body) : r) }) }; };

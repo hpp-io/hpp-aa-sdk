@@ -1,264 +1,183 @@
 # @hpp-io/aa-sdk
 
-HPP Account Abstraction SDK. Kernel v3.3 smart accounts on HPP (EIP-7702 or factory), Smart Sessions for agents,
-and the HPP bundler — with the chain-specific pitfalls handled inside the library.
+**Smart accounts for [HPP](https://docs.hpp.io).** Let your users sign in with an email wallet, transact
+without holding ETH, and give an AI agent a spending limit — in a few lines of TypeScript.
 
-> Status: **HPP Sepolia** (chain 181228) and **HPP Mainnet** (chain 190415, since 0.3.1). Pass `chain: hppMainnet`
-> with the mainnet bundler URL. ERC-7710 payment delegations work on both (0.3.3+).
+The SDK talks to HPP's own ERC-4337 bundler and paymaster and takes care of HPP's chain-specific details,
+so you work with plain `sendCalls([...])`.
 
-## Quickstart — 3 steps
+📖 **Full documentation: [docs.hpp.io/smart-accounts](https://docs.hpp.io/smart-accounts)**
+
+## What you can do
+
+- **Create a smart account** for any user — their existing address (EIP-7702) or a new one.
+- **Send several calls as one transaction** — approve + pay in a single signature.
+- **Let users skip ETH** — HPP can cover the gas, or charge it in USDC.e.
+- **Pay x402 APIs** from a smart account.
+- **Give an agent limited, revocable permissions** — a USDC.e budget for x402 payments, or a session for
+  specific contracts.
+
+## Install
 
 ```bash
 npm i @hpp-io/aa-sdk viem
 ```
 
-Source: [github.com/hpp-io/hpp-aa-sdk](https://github.com/hpp-io/hpp-aa-sdk) · Infra & guide: [hpp-io/hpp-bundler](https://github.com/hpp-io/hpp-bundler) (`docs/DEVELOPER_GUIDE.md`) · Example app: [hpp-io/hpp-aa-examples](https://github.com/hpp-io/hpp-aa-examples)
+Requires Node.js 20+, ESM (`"type": "module"` or `.mjs`), and `viem` 2.56+. Works in Node and the browser.
+
+## Networks
+
+| | Chain ID | Bundler + paymaster URL | SDK chain |
+| --- | --- | --- | --- |
+| HPP Mainnet | `190415` | `https://aa.hpp.io/rpc` | `hppMainnet` |
+| HPP Sepolia (testnet) | `181228` | `https://aa-sepolia.hpp.io/rpc` | `hppSepolia` |
+
+Start on Sepolia. Test ETH: [HPP Sepolia Faucet](https://faucet.hpp.io/).
+
+## Quickstart
+
+Send USDC.e from a smart account on HPP Sepolia. The account here pays its own gas, so first send about
+0.0001 test ETH to the key's address.
 
 ```ts
 import { createHppAccount, hppSepolia, TOKENS } from "@hpp-io/aa-sdk";
 import { privateKeyToAccount } from "viem/accounts";
 import { encodeFunctionData, parseAbi } from "viem";
 
-// 1. an account. `owner` is any viem LocalAccount (Privy/Dynamic embedded signer, server key)
-//    or a WalletClient from a browser wallet (MetaMask, Rabby …).
-const user = await createHppAccount({ owner: privateKeyToAccount(KEY), chain: hppSepolia, bundlerUrl: BUNDLER_URL });
-await user.ensureReady({ sponsor });              // once. 7702: delegation tx · factory: createAccount tx. `sponsor` pays.
-
-// 2. send calls — one UserOperation, atomic. approve + pay in a single prompt.
-const erc20 = parseAbi(["function transfer(address,uint256) returns (bool)"]);
-await user.sendCalls([{ to: TOKENS[181228].USDCe, data: encodeFunctionData({ abi: erc20, functionName: "transfer", args: [to, 1_000_000n] }) }]);
-
-// 3. delegate to an agent — one signature, then the agent acts within the limits, no prompts.
-const { permissionId } = await user.grantSession({
-  signer: agent.address,
-  actions: [{ target: TOKENS[181228].USDCe, signature: "transfer(address,uint256)" }],
-  spend: [{ token: TOKENS[181228].USDCe, limit: 5_000_000n }],   // 5 USDC.e total
-  validUntil: Math.floor(Date.now() / 1000) + 30 * 86400,
+// 1. Create the account. With a private key, the key's own address becomes the smart account.
+const user = await createHppAccount({
+  owner: privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`),
+  chain: hppSepolia,
+  bundlerUrl: "https://aa-sepolia.hpp.io/rpc",
 });
+
+// 2. Make it ready — a one-time setup transaction.
+await user.ensureReady();
+
+// 3. Send calls. Everything in the array runs in one transaction.
+const USDCe = TOKENS[181228].USDCe;
+const erc20 = parseAbi(["function transfer(address to, uint256 amount) returns (bool)"]);
+const r = await user.sendCalls([
+  { to: USDCe, data: encodeFunctionData({ abi: erc20, functionName: "transfer", args: [user.address, 0n] }) },
+]);
+
+console.log(r.success, `https://sepolia-explorer.hpp.io/tx/${r.txHash}`);
 ```
 
-Agent side:
+`sendCalls` does not throw if the transaction was included but reverted — check `r.success`.
+
+Next: [Quickstart in the docs](https://docs.hpp.io/smart-accounts/quickstart) — embedded wallets (Privy),
+browser wallets, and paying setup for your users.
+
+## Common tasks
+
+### Let users transact without ETH
+
+Add the policy HPP issued to your app. The SDK picks the right paymaster and tells you what was charged.
 
 ```ts
-import { createHppSessionClient } from "@hpp-io/aa-sdk";
-const agentClient = await createHppSessionClient({ account: user.address, permissionId, signer: agentKey, bundlerUrl: BUNDLER_URL });
-await agentClient.sendCalls([{ to: USDCe, data: transferCalldata }]);   // over the cap → rejected at validation, no gas spent
-```
-
-Revoke: `await user.revokeSession(permissionId)`.
-
-**Result handling**: `sendCalls`, `grantSession`, `revokeSession` return `{ success, txHash, userOpHash, receipt }` and do **not** throw when the
-UserOperation was mined but its execution reverted (`success: false`). They *do* throw when the bundler or paymaster rejects the
-request before inclusion (validation revert, policy denial, budget exhausted). Check `success` after every call.
-
-## Gas sponsorship (ERC-7677) — free, then USDC.e
-
-The HPP paymaster shares the bundler URL and takes `{ policyId, anchorId? }` as the 7677 context. `policyId` is your
-app's policy (issued by HPP ops); `anchorId` is the per-user entitlement your **backend** attaches for the logged-in
-user — never something the end user types.
-
-```ts
-const user = await createHppAccount({ owner, chain: hppSepolia, bundlerUrl, paymaster: { policyId, anchorId } });
-await user.sendCalls([...]);        // account holds 0 ETH; the paymaster's deposit pays
-```
-
-A policy is one of three kinds (HPP ops set it):
-
-| `fee_mode` | who pays | what the user needs |
-|---|---|---|
-| `sponsored` | HPP (VerifyingPaymaster) | nothing |
-| `token` | the user, in USDC.e, charged after execution (SingletonPaymaster postOp) | USDC.e balance |
-| `sponsored_then_token` | free for the first N ops per anchor, then USDC.e | USDC.e balance once the free ops are used |
-
-The SDK handles the switch: the same `sendCalls` call goes to the free paymaster while free ops remain and to the
-ERC-20 paymaster afterwards. Every `SendResult` carries `fee`:
-
-```ts
-const r = await user.sendCalls([...]);
-r.fee   // { mode: "sponsored", freeRemaining: 2 }
-        // { mode: "token", token, symbol: "USDC.e", decimals: 6, exchangeRate, maxToken, charged }   ← charged = actual USDC.e taken
-```
-
-**Show the fee before signing** — `quoteFee` runs the stub + gas estimate and returns the upper bound the user will be asked to hold:
-
-```ts
-const q = await user.quoteFee(calls);
-if (q.mode === "token") ui.show(`up to ${formatUnits(q.maxToken, q.decimals)} ${q.symbol} (actual cost is charged)`);
-```
-
-**The fee approve rides in the op that pays** — the ERC-20 paymaster pulls USDC.e with `transferFrom` in postOp, *after*
-the op's calls have run. So when an op will be charged in USDC.e and the allowance doesn't cover it, `sendCalls` puts
-`approve(paymaster, 1.5 × this op's max fee)` first in that same op — one signature, no separate approve step, and no
-standing unlimited allowance. The leftover covers about half the next op's fee, and the next op tops it up only when it falls short.
-Ops that are sponsored, and revokes (always sponsored), carry no approve.
-
-`ensureFeeAllowance({ amount, calls })` remains for apps that want to pre-approve a fixed amount up front (default 1 token).
-
-**Agents pay their gas from the user's account too** — a session agent can't approve on the user's behalf unless the
-session allows it. Add `feeApproveAction` to the session: an approve whose spender is pinned to the paymaster, capped
-per call and in total by Smart Sessions' Universal Action Policy (so it can't be used to move funds), and not counted
-against the session's `spend` limit:
-
-```ts
-await user.grantSession({
-  signer: agent.address,
-  actions: [
-    { target: USDC, signature: "transfer(address,uint256)" },
-    feeApproveAction({ token: USDC, paymaster: ERC20_PAYMASTER, perCall: 300_000n, total: 5_000_000n }), // ≤ 0.30 per op, ≤ 5 USDC.e of gas
-  ],
-  spend: [{ token: USDC, limit: 10_000_000n }],   // what the agent may pay out — fees are separate
-  usageLimit: 100n,
+const user = await createHppAccount({
+  owner, chain, bundlerUrl,
+  paymaster: { policyId: "<your policy>", anchorId: "<this user's anchor>" },
 });
+const r = await user.sendCalls(calls);
+r.fee;   // { mode: "sponsored", … } or { mode: "token", charged, symbol: "USDC.e", … }
 ```
 
-`perCall` must cover one op's approve (1.5× its max fee); `total` bounds the gas a misbehaving agent can burn.
+To get a policy, open a [Gas sponsorship request](https://github.com/hpp-io/hpp-aa-sdk/issues/new/choose).
+Keep anchor IDs private. → [Gas sponsorship](https://docs.hpp.io/smart-accounts/gas-sponsorship)
 
-`user.sessionUsage(permissionId, { feeToken: USDC })` reads what a session has used from its on-chain policies:
-`{ ops: { used, limit }, feeApproved: { used, limit } }` (fee approvals are an upper bound on the gas it paid).
+### Use an embedded wallet (Privy, Dynamic, …)
 
-**Rejections** arrive as JSON-RPC `-32000` with `data.reason`. Three of them mean "start over from the stub" and the SDK retries
-them for you (`free_exhausted`: another op took the last free slot; `fee_quote_stale`: the exchange rate moved > 3% since the quote;
-`fee_allowance_missing`: gas was re-estimated above the approve's headroom). The rest need the user or the app:
-`fee_balance_insufficient` (also when the op itself would move out the USDC.e needed for its fee), `would_revert` (the op's
-execution reverts), `sender_blocked` / `anchor_blocked` (repeated failed ops), plus the policy
-ones (`policy_required`, `anchor_unknown`, `budget_exceeded`, …). Signatures are short-lived (policy default 5 min): send right away.
-
-`paymaster` also accepts `true` (same URL, no context), a separate URL, or a viem `PaymasterClient` — then there is no `fee`
-detail and no re-quote. `createHppSessionClient` takes the same option, so agent UserOps are charged under the same policy
-(gas comes from the account's USDC.e through `feeApproveAction`, independent of the session's spend limit).
-
-## Who pays for setup? (`sponsor`)
-
-`ensureReady({ sponsor })` accepts either a funded viem `WalletClient` (scripts, servers) or a `RemoteSponsor`
-for browser apps — the page signs, your backend broadcasts:
-
-```ts
-const sponsor = {
-  submitDelegation: ({ account, authorization }) => post("/api/sponsor", { type: "delegate", account, authorization }),
-  submitDeploy:     ({ account, initData, salt }) => post("/api/sponsor", { type: "deploy", account, initData, salt }),
-};
-await user.ensureReady({ sponsor });   // owner never needs ETH for setup
-```
-
-## Embedded wallets (Privy, Dynamic, Turnkey …)
-
-The SDK never touches a private key. Give it the two primitives every embedded-wallet SDK exposes and it
-takes the 7702 path (same address, no new deposit):
+Wrap the wallet's signing functions; the user keeps their address.
 
 ```ts
 import { toEmbeddedOwner } from "@hpp-io/aa-sdk";
-// Privy (react)
-const { signMessage } = useSignMessage();
-const { signAuthorization } = useSignAuthorization();
+
 const owner = toEmbeddedOwner({
-  address: wallet.address,
-  signMessage: (hash) => signMessage({ message: { raw: hash } }, { address: wallet.address }).then((r) => r.signature),
-  signAuthorization: (a) => signAuthorization({ contractAddress: a.contractAddress, chainId: a.chainId, nonce: a.nonce }, { address: wallet.address }),
+  address,
+  signMessage: (hash) => provider.request({ method: "personal_sign", params: [hash, address] }),
+  signTypedData: (td) => provider.request({ method: "eth_signTypedData_v4", params: [address, JSON.stringify(td, (_, v) => (typeof v === "bigint" ? v.toString() : v))] }),
+  signAuthorization,   // the wallet's EIP-7702 authorization signer
 });
-const user = await createHppAccount({ owner, chain: hppSepolia, bundlerUrl });
 ```
 
-Leave out `signAuthorization` for a wallet that cannot sign type-4 authorizations and the account becomes a
-factory account automatically. HPP is a custom chain for these vendors: register it with viem's `defineChain`
-(`hppSepolia` is exactly that) — no vendor-side approval is needed, since signing is chain-agnostic.
+Embedded wallets cannot send the setup transaction themselves, so pass a `sponsor` to `ensureReady`.
+→ [Quickstart: embedded wallet](https://docs.hpp.io/smart-accounts/quickstart)
 
-## Which account mode?
+### Pay an x402 API
 
-| owner | mode | address | how it becomes a smart account |
-|---|---|---|---|
-| LocalAccount that can `signAuthorization` (embedded wallets, server keys) | `7702` (default) | **same as the EOA** | `ensureDelegated()` sends one type-4 tx |
-| WalletClient from a browser wallet (no 7702 signing exposed to dapps) | `factory` (auto) | new counterfactual address | `ensureReady({ sponsor })` calls `KernelFactory.createAccount` (initCode deployment needs a staked factory — not yet on HPP) |
-
-Both modes share everything after that: batching, sessions, revocation. Force a mode with `mode: "factory"`.
-
-## Paying with x402 / signing EIP-712 (EIP-3009, Permit, Permit2)
-
-Pass the account itself as the signer — it produces ERC-1271 signatures:
+Use the smart account as the x402 signer. Payments are signatures — no transaction, no gas.
 
 ```ts
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
 
-const user = await createHppAccount({ owner, bundlerUrl: HPP_AA_ENDPOINTS[181228] });
 const client = new x402HTTPClient(new x402Client().register("eip155:181228", new ExactEvmScheme(user.account)));
-const payload = await client.createPaymentPayload(paymentRequired);   // account signs, no UserOp, no gas
-const res = await fetch(url, { method: "POST", headers: { ...client.encodePaymentSignatureHeader(payload) }, body });
 ```
 
-A smart account cannot sign these payloads with a plain owner signature: the token sees code at the
-address and calls `isValidSignature` instead of `ecrecover`. **This includes 7702-delegated EOAs** —
-once delegated, the address has code and a raw owner signature is rejected (`FiatTokenV2: invalid
-signature`). `user.account.signTypedData()` wraps the hash in the account's Kernel domain and prefixes
-the root-validator selector; `signErc1271TypedData` / `signErc1271Message` expose the same thing
-directly. Both account modes work — see `examples/x402-exact.mjs` (`MODE=7702|factory`).
+Sign through the account, not the raw owner key: tokens check signatures with the account's code. Full
+example: [`examples/x402-exact.mjs`](examples/x402-exact.mjs).
 
-## Agents paying x402 without holding funds (ERC-7710 delegations)
-
-A session lets an agent send UserOps; it cannot sign an x402 (EIP-3009) payment, because that
-signature is checked through the account's ERC-1271 and never passes the session's policies. For
-payments use a **payment delegation** instead: the account signs a delegation to the agent's key
-with on-chain caps (MetaMask delegation-framework enforcers, redeployed on HPP), and the HPP
-facilitator redeems it per payment through the account — the agent's key never holds USDC.e or ETH.
+### Give an agent a budget
 
 ```ts
-// wallet side — one UserOp once (installs the DelegationManager executor), then signatures only
 const grant = await user.grantPaymentDelegation({
-  agent: agentKey.address, token: USDCe,
-  limit: parseUnits("5", 6),            // or period: { amount, seconds } for a rolling cap
-  validUntil: BigInt(now + 30 * 86400), maxCalls: 100n,
+  agent: agentAddress, token: USDCe, limit: 5_000_000n,           // 5 USDC.e in total
+  validUntil: BigInt(Math.floor(Date.now() / 1000) + 30 * 86400), // 30 days
 });
-// give the agent grant.permissionContext; keep grant.delegation to revoke:
-await user.revokePaymentDelegation(grant.delegation);   // one UserOp, effective immediately
-
-// agent side — per 402 whose extra.assetTransferMethod === "erc7710"
-const leaf = buildPaymentRedelegation(chain.id, agentKey.address, {
-  parentPermissionContext: grant.permissionContext,
-  facilitatorAddresses: requirements.extra.facilitatorAddresses, token, amount, payTo,
-});
-const payload = await signPaymentRedelegation({ chainId: chain.id, agent: agentKey, leaf, parentPermissionContext: grant.permissionContext });
-// → x402 payload { delegationManager, permissionContext, delegator } for the exact scheme
+// give the agent grant.permissionContext; revoke any time:
+await user.revokePaymentDelegation(grant.delegation);
 ```
 
-`@metamask/x402` + `@metamask/smart-accounts-kit` produce the same bytes: register HPP's contracts
-with `overrideDeployedEnvironment(chain.id, "1.3.0", erc7710Environment(chain.id))` and use
-`x402Erc7710Client({ delegationProvider: createx402DelegationProvider({ account: agentKey, parentPermissionContext: grant.permissionContext, ... }) })`.
+The agent pays x402 services from the user's account within the limit, enforced on-chain, and never holds
+funds. Example: [`examples/x402-erc7710.mjs`](examples/x402-erc7710.mjs). For agents that call contracts
+instead, use `grantSession`. → [Agent permissions](https://docs.hpp.io/smart-accounts/agent-permissions)
 
-What the caps enforce, on-chain: total or per-period USDC.e, expiry, max redemptions (grant); exact
-amount, exact recipient, only HPP facilitator keys may redeem, short expiry (each payment). Full
-example: `examples/x402-erc7710.mjs` against a facilitator that advertises `erc7710` on `/supported`.
-Only works with sellers settled by the HPP facilitator (other facilitators do not implement ERC-7710).
+## When something fails
 
-## What the SDK handles for you (the nine HPP pitfalls)
+```ts
+import { paymasterReason } from "@hpp-io/aa-sdk";
 
-1. **Fees** — `rundler_getUserOperationGasPrice`, not viem's estimator (priority fee is 0 on HPP).
-2. **preVerificationGas** — +15 % buffer by default (`pvgBufferPercent`); HPP gas is ~98 % L1 data.
-3. **7702 factory marker** — delegation is a separate type-4 tx, so UserOps never carry `factory: "0x7702"`.
-4. **7702 UserOp hash / signature** — root signs EIP-191(userOpHash), verified by Kernel against `address(this)`.
-5. **Kernel validator install** — Smart Sessions `initData` includes the `execute` selector; installed inside the first UserOp.
-6. **Session nonce** — nonce key type `0x01` (module-sdk's helper emits `0x00`, which routes to the root key).
-7. **ERC-1271 signatures** — payload hash wrapped in the account's Kernel domain + root-validator byte, so EIP-3009 / Permit / x402 verify against the account (a raw owner signature does not).
-| ⑧ | ERC-20 paymaster ops need a real `paymasterPostOpGasLimit` (postOp does the `transferFrom`); viem leaves it 0 without a stub | the HPP paymaster stub returns 120k and the SDK keeps it |
-| ⑨ | A nonce lane's first use costs more verification gas (cold nonce slot) — reusing another lane's estimate fails `AA26` in the bundler's pre-sign simulation | `sendCalls` estimates per op; if you build ops by hand, estimate each lane |
+try { await user.sendCalls(calls); }
+catch (e) { console.log(paymasterReason(e)); }   // e.g. "fee_balance_insufficient", or null
+```
 
-## Layout
+Every error and how to fix it: [Errors & troubleshooting](https://docs.hpp.io/smart-accounts/errors).
 
-- `chains.ts` — `hppSepolia`, `hppMainnet`
-- `addresses.ts` — canonical addresses, `TOKENS`
-- `bundler.ts` — `createHppBundlerClient` (fees, pVG buffer, ERC-7677 paymaster hook)
-- `account.ts` — `toKernelAccount` (viem `SmartAccount`, 7702 / factory)
-- `fee.ts` — fee approve inside the paying op: `planFee`, `sendWithFee`, `feeApprovalCall`, `feeApproveAction`
-- `sessions.ts` — `buildSession`, `sessionUsage`, `enableSessionsCall`, `removeSessionCall`, `toSessionAccount`
-- `erc1271.ts` — `signErc1271TypedData`, `signErc1271Message`, `kernelWrappedHash`
-- `erc7710.ts` — payment delegations: `buildPaymentDelegation`, `signDelegationAsAccount`, `buildPaymentRedelegation`, `signPaymentRedelegation`, `encodeDelegations`, `erc7710Environment`
-- `index.ts` — `HppAccount` / `createHppAccount`, `createHppSessionClient`
+## What the SDK handles for you
 
-## Tests
+If you talk to HPP's bundler without this SDK, you need to handle these yourself:
+
+1. **Gas price** — HPP's priority fee is 0; ask `rundler_getUserOperationGasPrice` instead of a generic estimator.
+2. **preVerificationGas** — mostly L1 data cost on HPP; the SDK adds a 15% buffer.
+3. **EIP-7702 setup** — sent as its own type-4 transaction, never as a `0x7702` factory marker in a UserOperation.
+4. **7702 signatures** — the owner signs the EIP-191-prefixed UserOperation hash.
+5. **Session module install** — Kernel needs the `execute` selector in the install data; done in the first operation.
+6. **Session nonce key** — type byte `0x01` (a common helper emits `0x00`, which routes to the owner key).
+7. **Account signatures (ERC-1271)** — wrapped in the account's Kernel domain so tokens and x402 accept them.
+8. **USDC.e gas** — the token paymaster needs a real `paymasterPostOpGasLimit`; the SDK keeps the one the paymaster returns.
+9. **Parallel nonce lanes** — a lane's first use costs more gas; the SDK estimates each operation separately.
+
+Details: [Reference → If you bypass the SDK](https://docs.hpp.io/smart-accounts/reference#if-you-bypass-the-sdk).
+
+## Help
+
+- Questions, bugs, sponsorship requests: [open an issue](https://github.com/hpp-io/hpp-aa-sdk/issues/new/choose).
+  Never post private keys, anchor IDs, or policy IDs.
+- HPP Smart Wallet users: [HPP Telegram](https://t.me/aergoofficial).
+
+## Development
 
 ```bash
-npm test                                       # encoding unit tests (byte layouts proven by test/cases/*)
-PAYER_KEY=0x… npm run e2e                       # Sepolia e2e, 7702 path (sponsor = examples/.sdk-test-sponsor.json; never the refill funder)
-RELAYER_KEY=0x… PAYER_KEY=0x… MODE=factory node examples/e2e-sepolia.mjs
-RELAYER_KEY=0x… PAYER_KEY=0x… OWNER=embedded node examples/e2e-sepolia.mjs   # 7702 through toEmbeddedOwner
-RELAYER_KEY=0x… PAYER_KEY=0x… PAYMASTER_URL=… POLICY_ID=… ANCHOR_ID=… node examples/e2e-sepolia.mjs   # sponsored: account ETH stays 0
-PAYMASTER_URL=… DELEGATED_ACCOUNT_KEY=0x… node examples/paymaster-stub-check.mjs   # stub+estimate only, reserves nothing
+npm install
+npm run build
+npm test        # unit tests, no network
 ```
+
+`examples/` holds the end-to-end scripts we run against HPP Sepolia; the comment at the top of each script
+shows how to run it.
+
+## License
+
+MIT
