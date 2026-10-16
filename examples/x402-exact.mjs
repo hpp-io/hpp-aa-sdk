@@ -1,4 +1,4 @@
-// ERC-1271 x402 결제: 7702 계정과 factory 계정 둘 다 실제 판매자에게 결제한다.
+// x402 payment with ERC-1271 signatures: both a 7702 account and a factory account pay a real seller.
 // usage: MODE=7702|factory node examples/x402-exact.mjs
 import fs from "node:fs";
 import { createPublicClient, createWalletClient, http, parseAbi, formatUnits } from "viem";

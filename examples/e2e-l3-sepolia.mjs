@@ -14,7 +14,7 @@ const ADMIN = PM_URL.replace(/\/rpc$/, "/admin");
 const MODE = process.env.MODE === "factory" ? "factory" : "7702";
 const USDC = TOKENS[181228].USDCe;
 const run = Math.random().toString(36).slice(2, 8), POLICY = `l3-sdk-${run}`, ANCHOR = `anchor-sdk-${run}`;
-for (const k of ["ADMIN_TOKEN", "PAYER_KEY", "RELAYER_KEY"]) if (!process.env[k]) { console.log(`RESULT: SKIP (${k} 없음)`); process.exit(0); }
+for (const k of ["ADMIN_TOKEN", "PAYER_KEY", "RELAYER_KEY"]) if (!process.env[k]) { console.log(`RESULT: SKIP (${k} not set)`); process.exit(0); }
 
 const erc20 = parseAbi(["function transfer(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)", "function allowance(address,address) view returns (uint256)"]);
 const log = (k, v) => console.log(`[${k}]`, typeof v === "string" ? v : JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x)));

@@ -15,12 +15,12 @@ import { createHppAccount, createHppSessionClient, hppSepolia, TOKENS, ADDRESSES
 
 const SPONSOR_FILE = new URL("./.sdk-test-sponsor.json", import.meta.url);
 const RELAYER_KEY = process.env.RELAYER_KEY ?? (fs.existsSync(SPONSOR_FILE) ? JSON.parse(fs.readFileSync(SPONSOR_FILE)).k : undefined);
-if (!RELAYER_KEY) throw new Error("RELAYER_KEY 또는 examples/.sdk-test-sponsor.json 필요 (funder 키 금지)");
+if (!RELAYER_KEY) throw new Error("RELAYER_KEY or examples/.sdk-test-sponsor.json is required (use a dedicated test key)");
 const FUNDER = "0xba8a6b555a7a014a3822c962ea0bd778eeb02f11";
 
 const BUNDLER = process.env.BUNDLER_URL ?? "http://localhost:14337";
-// 대납 모드: PAYMASTER_URL(eth_*+pm_* 단일 엔드포인트) + POLICY_ID(+ANCHOR_ID). 계정에 ETH를 넣지 않는다 → 시나리오 ① "가스 없는 사용자".
-// ⚠️ pm_getPaymasterData 가 정책 예산·앵커 캡을 예약한다. 공유 dev 정책에 돌릴 때는 운영자와 조율.
+// Sponsored mode: PAYMASTER_URL (one endpoint for eth_* + pm_*) + POLICY_ID (+ANCHOR_ID). The account gets no ETH — the "gasless user" scenario.
+// Note: pm_getPaymasterData reserves policy budget and anchor quota. Coordinate before running against a shared policy.
 const SPONSORED = !!process.env.POLICY_ID;
 const PM_URL = process.env.PAYMASTER_URL ?? BUNDLER;
 const paymaster = SPONSORED ? { url: PM_URL, policyId: process.env.POLICY_ID, ...(process.env.ANCHOR_ID ? { anchorId: process.env.ANCHOR_ID } : {}) } : undefined;
@@ -28,7 +28,7 @@ const MODE = process.env.MODE === "factory" ? "factory" : "7702";
 const chain = hppSepolia;
 const pub = createPublicClient({ chain, transport: http() });
 const relayer = createWalletClient({ account: privateKeyToAccount(RELAYER_KEY), chain, transport: http() });
-if (relayer.account.address.toLowerCase() === FUNDER) throw new Error("RELAYER_KEY가 executor 리필 funder와 같은 키 — 전용 테스트 키를 쓰세요 (TEST_PLAN §3.2.1)");
+if (relayer.account.address.toLowerCase() === FUNDER) throw new Error("RELAYER_KEY must not be the bundler's funder key — use a dedicated test key");
 const payer = createWalletClient({ account: privateKeyToAccount(process.env.PAYER_KEY), chain, transport: http() });
 const USDC = TOKENS[chain.id].USDCe;
 const erc20 = parseAbi(["function transfer(address,uint256) returns (bool)", "function balanceOf(address) view returns (uint256)"]);
@@ -100,14 +100,14 @@ const s4 = await tryIt("6_after_revoke_0.01", () => pay(10_000n));
 log("6_revoked", { tx: rv.txHash, enabled: await user.isSessionEnabled(permissionId) });
 
 const got = (await pub.readContract({ address: USDC, abi: erc20, functionName: "balanceOf", args: [sink] })) - sinkBefore;
-const expected = 10_000n + 30_000n; // step 3 + one agent spend (payer 소모 0: 0.04 지급 → 전액 복귀)
-console.log("\n=== SDK e2e 판정 (" + MODE + (process.env.OWNER ? "/" + process.env.OWNER : "") + (SPONSORED ? "/sponsored" : "") + ") ===");
-if (SPONSORED) console.log("계정 ETH 잔고(끝)     :", (await pub.getBalance({ address: user.address })).toString(), "wei — 0이어야 대납 성립");
-console.log("owner UserOp 성공     :", r3.success ? "PASS" : "FAIL");
-console.log("세션 내 지출 성공     :", s1 ? "PASS" : "FAIL");
-console.log("한도 초과 거부        :", !s2 ? "PASS" : "FAIL");
-console.log("허용 외 대상 거부     :", !s3 ? "PASS" : "FAIL");
-console.log("취소 후 거부          :", !s4 ? "PASS" : "FAIL");
-console.log("실지출 일치           :", got === expected ? "PASS" : `FAIL(${formatUnits(got, 6)} vs ${formatUnits(expected, 6)})`);
-console.log(`소요 ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+const expected = 10_000n + 30_000n; // step 3 + one agent spend (payer nets 0: 0.04 sent, all returned)
+console.log("\n=== SDK e2e result (" + MODE + (process.env.OWNER ? "/" + process.env.OWNER : "") + (SPONSORED ? "/sponsored" : "") + ") ===");
+if (SPONSORED) console.log("account ETH (end)     :", (await pub.getBalance({ address: user.address })).toString(), "wei — must be 0 for a sponsored run");
+console.log("owner UserOp succeeds :", r3.success ? "PASS" : "FAIL");
+console.log("in-session spend      :", s1 ? "PASS" : "FAIL");
+console.log("over-limit rejected   :", !s2 ? "PASS" : "FAIL");
+console.log("wrong target rejected :", !s3 ? "PASS" : "FAIL");
+console.log("rejected after revoke :", !s4 ? "PASS" : "FAIL");
+console.log("actual spend matches  :", got === expected ? "PASS" : `FAIL(${formatUnits(got, 6)} vs ${formatUnits(expected, 6)})`);
+console.log(`took ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 console.log("\nRESULT:", r3.success && s1 && !s2 && !s3 && !s4 && got === expected ? "PASS" : "FAIL");

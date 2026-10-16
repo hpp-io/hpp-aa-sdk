@@ -7,7 +7,7 @@ import { hppSepolia } from "../dist/chains.js";
 
 const owner = privateKeyToAccount("0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d");
 const account = "0x1111111111111111111111111111111111111111";
-// eip712Domain() 이 없는(미배포) 계정 → Kernel v3.3 상수 도메인으로 떨어진다
+// An account without eip712Domain() (not deployed yet) falls back to the Kernel v3.3 constant domain
 const client = { chain: hppSepolia, request: async () => { throw new Error("no code"); } };
 
 test("wraps the payload hash in the account's Kernel domain", async () => {
@@ -30,7 +30,7 @@ test("signs the wrapped hash as typed data and prefixes the root validator byte"
     types: { Kernel: [{ name: "hash", type: "bytes32" }] }, primaryType: "Kernel", message: { hash },
   });
   assert.equal(sig, "0x00" + expected.slice(2));
-  // EIP-191 로 서명하면 Kernel 이 거부한다 — 그 형태가 아니어야 한다
+  // Kernel rejects an EIP-191 signature here — the output must not be in that form
   assert.notEqual(sig, "0x00" + (await owner.signMessage({ message: { raw: await kernelWrappedHash(client, account, hash) } })).slice(2));
 });
 
