@@ -145,6 +145,21 @@ catch (e) { console.log(paymasterReason(e)); }   // e.g. "fee_balance_insufficie
 
 Every error and how to fix it: [Errors & troubleshooting](https://docs.hpp.io/smart-accounts/errors).
 
+### Re-delegated accounts (`ForeignDelegationError`)
+
+A 7702 account's code is `0xef0100` + the Kernel address. If it ever points anywhere else, someone holding the owner
+key re-delegated it (the EIP-7702 attack pattern — HPP never does this). `ensureReady()` / `ensureDelegated()` then
+throw `ForeignDelegationError` instead of trying to re-delegate, which would only race the attacker. Block the
+account in your UI, tell the user not to deposit, and route them to support.
+
+```ts
+import { ForeignDelegationError } from "@hpp-io/aa-sdk";
+
+const state = await user.delegationState();   // { kind: "none" | "kernel" | "foreign" | "contract", ... }
+try { await user.ensureReady({ sponsor }); }
+catch (e) { if (e instanceof ForeignDelegationError) showCompromised(e.account, e.target); else throw e; }
+```
+
 ## What the SDK handles for you
 
 If you talk to HPP's bundler without this SDK, you need to handle these yourself:

@@ -10,7 +10,7 @@ import { createHppPaymaster, feeInfoOf, type FeeInfo, type HppFeeQuote, type Hpp
 import { approveCall, planFee, sendWithFee, type FeeCtx } from "./fee.js";
 import { toKernelAccount, type KernelAccountMode, type KernelSmartAccount } from "./account.js";
 import { hppSepolia } from "./chains.js";
-import { installSmartSessionsCall, kernelAbi, kernelDelegationCode, kernelFactoryAbi, type Call } from "./kernel.js";
+import { classifyDelegation, ForeignDelegationError, installSmartSessionsCall, kernelAbi, kernelFactoryAbi, type Call, type DelegationState } from "./kernel.js";
 import { buildPaymentDelegation, delegationHash, encodeDelegations, erc7710Config, installDelegationExecutorCall, isDelegationDisabled, isDelegationExecutorInstalled, revokeDelegationCall, signDelegationAsAccount, type Delegation, type PaymentDelegationSpec, type PaymentGrant } from "./erc7710.js";
 import { canSignAuthorization, isLocalAccount, ownerAddress, signAuthorization, type Owner } from "./owner.js";
 import { buildSession, enableSessionsCall, isSessionEnabled, removeSessionCall, sessionUsage, toSessionAccount, type SessionSmartAccount, type SessionSpec, type SessionUsage } from "./sessions.js";
@@ -106,10 +106,18 @@ export class HppAccount {
     return new HppAccount({ address: account.address, mode: account.mode, chain, owner: opts.owner, account, client, bundler, paymaster: hpp } as never);
   }
 
-  /** 7702 mode: is the EOA already delegated to Kernel? Factory mode: is the account deployed? */
+  /**
+   * What the on-chain code at this address says: `none` (not delegated yet), `kernel` (ours), `foreign`
+   * (re-delegated to a non-HPP contract — the owner key was used by someone else) or `contract`.
+   */
+  async delegationState(): Promise<DelegationState> {
+    return classifyDelegation(await this.client.getCode({ address: this.address }));
+  }
+
+  /** 7702 mode: is the EOA delegated to an HPP Kernel? Factory mode: is the account deployed? */
   async isReady(): Promise<boolean> {
     const code = (await this.client.getCode({ address: this.address })) ?? "0x";
-    return this.mode === "7702" ? code.toLowerCase() === kernelDelegationCode() : code !== "0x";
+    return this.mode === "7702" ? classifyDelegation(code).kind === "kernel" : code !== "0x";
   }
 
   /**
@@ -118,7 +126,13 @@ export class HppAccount {
    * without it the owner sends it themselves (needs ETH). Factory mode needs nothing — the first UserOp deploys.
    */
   async ensureDelegated(opts: { sponsor?: Sponsor } = {}): Promise<Hex | null> {
-    if (this.mode !== "7702" || (await this.isReady())) return null;
+    if (this.mode !== "7702") return null;
+    const state = await this.delegationState();
+    if (state.kind === "kernel") return null;
+    // Never "repair" a foreign delegation by re-delegating: whoever holds the owner key did this, and a new
+    // authorization only races them (and confirms the key still works). Surface it so the app blocks the account.
+    if (state.kind === "foreign") throw new ForeignDelegationError(this.address, state.target);
+    if (state.kind === "contract") throw new Error(`account ${this.address} has contract code and cannot be EIP-7702-delegated`);
     if (!canSignAuthorization(this.owner)) throw new Error("owner cannot sign EIP-7702 authorizations — use mode: 'factory'");
     // EIP-7702: when the EOA sends its own type-4 tx, its nonce is bumped before the authorization is checked,
     // so the authorization must carry nonce + 1. With nonce + 0 the tx still succeeds but the delegation is
@@ -295,7 +309,7 @@ export class HppAccount {
     return isDelegationDisabled(this.client, erc7710Config(this.chain.id).delegationManager, delegation);
   }
 }
-type HppAccountMethods = "isReady" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
+type HppAccountMethods = "isReady" | "delegationState" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
 
 export const createHppAccount = HppAccount.create;
 

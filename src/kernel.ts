@@ -3,7 +3,7 @@ import {
   type Address, type Hex,
 } from "viem";
 import { getSmartSessionsValidator } from "@rhinestone/module-sdk";
-import { ADDRESSES, KERNEL_EXECUTE_SELECTOR } from "./addresses.js";
+import { ADDRESSES, KERNEL_EXECUTE_SELECTOR, KERNEL_IMPLS } from "./addresses.js";
 
 /** Minimal Kernel v3.3 ABI used by the SDK. */
 export const kernelAbi = parseAbi([
@@ -102,4 +102,39 @@ export function kernelInitializeData(owner: Address): Hex {
 /** Expected `eth_getCode` of an EOA delegated to Kernel. */
 export function kernelDelegationCode(impl: Address = ADDRESSES.kernelV33): Hex {
   return ("0xef0100" + impl.slice(2).toLowerCase()) as Hex;
+}
+
+/** What `eth_getCode` at an account says about its EIP-7702 state. */
+export type DelegationState =
+  | { kind: "none" }                        // plain EOA, not delegated yet
+  | { kind: "kernel"; impl: Address }       // delegated to an HPP Kernel implementation — healthy
+  | { kind: "foreign"; target: Address }    // delegated elsewhere — the owner key was used by someone else
+  | { kind: "contract"; code: Hex };        // real bytecode (factory account or an arbitrary contract)
+
+const DELEGATION_DESIGNATOR = /^0xef0100([0-9a-f]{40})$/;
+
+/**
+ * Classify an account's code. `foreign` is the EIP-7702 attack signature (Binance 14, 2026-10-30): a valid
+ * authorization signed with the owner key pointed the EOA at a sweeper. Apps must stop and warn, never
+ * re-delegate — that only races whoever holds the key.
+ */
+export function classifyDelegation(code: Hex | undefined, impls: readonly Address[] = KERNEL_IMPLS): DelegationState {
+  const c = (code ?? "0x").toLowerCase() as Hex;
+  if (c === "0x") return { kind: "none" };
+  const m = DELEGATION_DESIGNATOR.exec(c);
+  if (!m) return { kind: "contract", code: c };
+  const target = `0x${m[1]}` as Address;
+  return impls.some((i) => i.toLowerCase() === target) ? { kind: "kernel", impl: target } : { kind: "foreign", target };
+}
+
+/** Thrown by `ensureDelegated`/`ensureReady` when the account is delegated to a non-HPP contract. */
+export class ForeignDelegationError extends Error {
+  override readonly name = "ForeignDelegationError";
+  constructor(readonly account: Address, readonly target: Address) {
+    super(
+      `account ${account} is EIP-7702-delegated to ${target}, which is not an HPP Kernel implementation. ` +
+        "HPP never re-delegates accounts, so the owner key has been used by someone else: treat the account as compromised, " +
+        "do not deposit into it, and do not try to re-delegate it from the app.",
+    );
+  }
 }

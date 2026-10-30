@@ -15,6 +15,13 @@ export const ADDRESSES = {
   multicall3: "0xcA11bde05977b3631167028862bE2a173976CA11",
 } as const satisfies Record<string, Address>;
 
+/**
+ * Kernel implementations an EOA may be EIP-7702-delegated to and still count as "ours": the current impl plus any
+ * legacy impl kept during an upgrade. A delegation designator pointing anywhere else is `foreign`
+ * (see `classifyDelegation`) — someone holding the owner key re-delegated the account. HPP never does that.
+ */
+export const KERNEL_IMPLS: readonly Address[] = [ADDRESSES.kernelV33];
+
 /** Per-chain token addresses. */
 export const TOKENS: Record<number, { USDCe: Address }> = {
   181228: { USDCe: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
