@@ -84,6 +84,14 @@ const r = await user.sendCalls(calls);
 r.fee;   // { mode: "sponsored", … } or { mode: "token", charged, symbol: "USDC.e", … }
 ```
 
+A policy may accept more than one fee token (HPP Smart Wallet: USDC.e first, HPP second). Pick one per account:
+
+```ts
+await account.feeTokens();            // [{ token, symbol: "USDC.e", decimals: 6 }, { token, symbol: "HPP", decimals: 18 }]
+account.setFeeToken(HPP);             // every later op is quoted, approved and charged in HPP; null = policy default
+await account.ensureFeeAllowance({ token: HPP, amount: 50n * 10n ** 18n });   // optional up-front approve in that token
+```
+
 To get a policy, open a [Gas sponsorship request](https://github.com/hpp-io/hpp-aa-sdk/issues/new/choose).
 Keep anchor IDs private. → [Gas sponsorship](https://docs.hpp.io/smart-accounts/gas-sponsorship)
 
