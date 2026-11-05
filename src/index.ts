@@ -6,7 +6,7 @@ import type { BundlerClient, SmartAccount, UserOperationReceipt } from "viem/acc
 import type { SignedAuthorization } from "viem";
 import { ADDRESSES, AA_LIVE_CHAINS } from "./addresses.js";
 import { createHppBundlerClient, resolvePaymasterOption, type PaymasterOption } from "./bundler.js";
-import { createHppPaymaster, feeInfoOf, type FeeInfo, type HppFeeQuote, type HppPaymaster } from "./paymaster.js";
+import { createHppPaymaster, feeInfoOf, type FeeInfo, type HppFeeQuote, type HppFeeToken, type HppPaymaster } from "./paymaster.js";
 import { approveCall, planFee, sendWithFee, type FeeCtx } from "./fee.js";
 import { toKernelAccount, type KernelAccountMode, type KernelSmartAccount } from "./account.js";
 import { hppSepolia } from "./chains.js";
@@ -241,11 +241,16 @@ export class HppAccount {
    * ops are still free. Pass `calls` to fold the approve into that same op. Returns null when nothing was needed
    * (policy never charges tokens, or allowance already ≥ amount).
    */
-  async ensureFeeAllowance(opts: { calls?: Call[]; setup?: boolean; amount?: bigint } = {}): Promise<SendResult | null> {
+  async ensureFeeAllowance(opts: { calls?: Call[]; setup?: boolean; amount?: bigint; token?: Address } = {}): Promise<SendResult | null> {
     if (!this.paymaster) return null;
     const q = await this.quoteFee([], { setup: false });
     const spender = q.mode === "token" ? q.paymaster : q.mode === "sponsored" ? q.erc20Paymaster : undefined;
-    const fee = q.mode === "token" ? q : q.mode === "sponsored" ? q.feeToken : undefined;
+    let fee: HppFeeToken | undefined | null = q.mode === "token" ? q : q.mode === "sponsored" ? q.feeToken : undefined;
+    if (opts.token && q.mode !== "self") {
+      // a specific token (e.g. HPP as the 2nd fee token): must be one the policy accepts
+      fee = q.feeTokens?.find((t) => t.token.toLowerCase() === opts.token!.toLowerCase());
+      if (!fee) throw new Error(`fee token ${opts.token} is not accepted by this policy (accepted: ${(q.feeTokens ?? []).map((t) => t.symbol).join(", ") || "none"})`);
+    }
     if (!spender || !fee) return opts.calls?.length ? this.sendCalls(opts.calls, { setup: opts.setup }) : null;
     const { token, decimals } = fee;
     const amount = opts.amount ?? 10n ** BigInt(decimals);
@@ -253,6 +258,22 @@ export class HppAccount {
     if (allowance >= amount) return opts.calls?.length ? this.sendCalls(opts.calls, { setup: opts.setup }) : null;
     return this.sendCalls([approveCall(token, spender, amount), ...(opts.calls ?? [])], { setup: opts.setup });
   }
+
+  /**
+   * Fee tokens this account's policy accepts (first = default), e.g. [USDC.e, HPP]. Empty when fees are never
+   * charged in a token (no HPP paymaster, or a purely sponsored policy). One stub call, no side effects.
+   */
+  async feeTokens(): Promise<HppFeeToken[]> {
+    const q = await this.quoteFee([], { setup: false });
+    return q.mode === "self" ? [] : (q.feeTokens ?? (q.mode === "token" ? [{ token: q.token, symbol: q.symbol, decimals: q.decimals }] : q.feeToken ? [q.feeToken] : []));
+  }
+
+  /**
+   * Pay fees in `token` from now on — one of `feeTokens()`; null = the policy's default (its first token).
+   * Applies to every later sendCalls / quoteFee / ensureFeeAllowance on this account. The paymaster rejects a
+   * token the policy does not accept (fee_token_not_allowed).
+   */
+  setFeeToken(token: Address | null): void { this.paymaster?.setFeeToken(token); }
 
   /** Grant an agent a scoped session. One owner signature; the agent then acts without prompts. */
   async grantSession(spec: SessionSpec): Promise<{ permissionId: Hex; result: SendResult }> {
@@ -309,7 +330,7 @@ export class HppAccount {
     return isDelegationDisabled(this.client, erc7710Config(this.chain.id).delegationManager, delegation);
   }
 }
-type HppAccountMethods = "isReady" | "delegationState" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
+type HppAccountMethods = "isReady" | "delegationState" | "ensureDelegated" | "ensureDeployed" | "ensureReady" | "hasSmartSessions" | "sendCalls" | "grantSession" | "revokeSession" | "isSessionEnabled" | "sessionUsage" | "quoteFee" | "ensureFeeAllowance" | "feeTokens" | "setFeeToken" | "hasDelegationExecutor" | "installDelegationExecutor" | "grantPaymentDelegation" | "revokePaymentDelegation" | "isPaymentDelegationRevoked";
 
 export const createHppAccount = HppAccount.create;
 

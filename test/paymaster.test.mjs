@@ -69,3 +69,42 @@ test("feeInfoOf: token charge is read from the UserOperationSponsored log of the
   assert.equal(fee.mode, "token"); assert.equal(fee.charged, 113440n); assert.equal(fee.maxToken, 227683n);
   assert.deepEqual(feeInfoOf(undefined, SENDER, receipt, hash), { mode: "self" });
 });
+
+// 설계 26 / hpp-bundler#72: a policy may accept several fee tokens (USDC.e first, HPP second). The quote lists them and
+// setFeeToken picks one for every later pm_* call.
+test("feeTokens listed on both quote shapes; setFeeToken sends context.feeToken and drops cached quotes", async () => {
+  const HPP = "0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3";
+  const feeTokens = [{ token: USDC, symbol: "USDC.e", decimals: 6 }, { token: HPP, symbol: "HPP", decimals: "18" }];
+  const { f, calls } = mockFetch({
+    pm_getPaymasterStubData: (body) => body.params[3].feeToken
+      ? { result: { paymaster: PM_T, paymasterData: "0x03", paymasterVerificationGasLimit: "0x186a0", paymasterPostOpGasLimit: "0x1d4c0", hpp: { mode: "token", token: HPP, symbol: "HPP", decimals: 18, exchangeRate: "522500000000000000000000", maxToken: null, treasury: "0x" + "ba".repeat(20), erc20Paymaster: PM_T, feeTokens } } }
+      : { result: { paymaster: PM_V, paymasterData: "0x00", paymasterVerificationGasLimit: "0xea60", paymasterPostOpGasLimit: "0x0", hpp: { mode: "sponsored", freeRemaining: 2, erc20Paymaster: PM_T, feeToken: feeTokens[0], feeTokens } } },
+  });
+  const pm = createHppPaymaster({ url: "u", context: { policyId: "p", anchorId: "a" }, fetch: f });
+  await pm.getPaymasterStubData(op);
+  const q0 = pm.lastQuote(SENDER);
+  assert.equal(q0.mode, "sponsored");
+  assert.deepEqual(q0.feeTokens, [{ token: USDC, symbol: "USDC.e", decimals: 6 }, { token: HPP, symbol: "HPP", decimals: 18 }], "decimals normalised to numbers");
+  assert.equal(calls[0].params[3].feeToken, undefined, "default token: nothing sent");
+
+  pm.setFeeToken(HPP);
+  assert.equal(pm.lastQuote(SENDER), undefined, "quote cache dropped — it was priced in the old token");
+  assert.deepEqual(pm.context, { policyId: "p", anchorId: "a", feeToken: HPP });
+  await pm.getPaymasterStubData(op);
+  assert.deepEqual(calls[1].params[3], { policyId: "p", anchorId: "a", feeToken: HPP });
+  const q1 = pm.lastQuote(SENDER);
+  assert.equal(q1.mode, "token"); assert.equal(q1.symbol, "HPP"); assert.equal(q1.decimals, 18); assert.equal(q1.feeTokens.length, 2);
+
+  pm.setFeeToken(null);
+  assert.deepEqual(pm.context, { policyId: "p", anchorId: "a" }, "null = back to the policy default");
+  await pm.getPaymasterStubData(op);
+  assert.equal(calls[2].params[3].feeToken, undefined);
+  assert.equal(pm.lastQuote(SENDER).mode, "sponsored");
+});
+
+test("setFeeToken is a no-op without an HPP context (plain ERC-7677 endpoint)", async () => {
+  const { f } = mockFetch({});
+  const pm = createHppPaymaster({ url: "u", fetch: f });
+  pm.setFeeToken("0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3");
+  assert.equal(pm.context, undefined);
+});

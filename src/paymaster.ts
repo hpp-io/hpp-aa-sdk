@@ -21,10 +21,14 @@ export type HppFeeQuote =
       /** Present when the policy will switch to token charging later — approve this address for `feeToken` while ops are still free. */
       erc20Paymaster?: Address;
       feeToken?: HppFeeToken | null;
+      /** Every token the policy accepts (first = default). Pick one with `setFeeToken` / `context.feeToken`. */
+      feeTokens?: HppFeeToken[];
     }
   | {
       mode: "token";
       token: Address; symbol: string; decimals: number;
+      /** Every token the policy accepts (first = default). Pick one with `setFeeToken` / `context.feeToken`. */
+      feeTokens?: HppFeeToken[];
       /** token base units per 1e18 wei, markup included — what the signature commits to */
       exchangeRate: bigint;
       /** upper bound the postOp may pull (maxCost × exchangeRate); null until gas is estimated */
@@ -59,16 +63,18 @@ type RpcResp = { result?: Record<string, unknown>; error?: { code: number; messa
 function parseQuote(h: unknown, paymaster: Address): HppFeeQuote | null {
   if (!h || typeof h !== "object") return null;
   const o = h as Record<string, any>;
-  if (o.mode === "sponsored") return { mode: "sponsored", freeRemaining: o.freeRemaining ?? null, erc20Paymaster: o.erc20Paymaster, feeToken: o.feeToken ?? null };
+  const feeTokens = Array.isArray(o.feeTokens) ? (o.feeTokens as HppFeeToken[]).map((t) => ({ token: t.token, symbol: t.symbol, decimals: Number(t.decimals) })) : undefined;
+  if (o.mode === "sponsored") return { mode: "sponsored", freeRemaining: o.freeRemaining ?? null, erc20Paymaster: o.erc20Paymaster, feeToken: o.feeToken ?? null, feeTokens };
   if (o.mode === "token") return {
     mode: "token", token: o.token, symbol: o.symbol, decimals: Number(o.decimals), exchangeRate: BigInt(o.exchangeRate),
-    maxToken: o.maxToken ? BigInt(o.maxToken) : null, treasury: o.treasury, erc20Paymaster: o.erc20Paymaster ?? paymaster, paymaster,
+    maxToken: o.maxToken ? BigInt(o.maxToken) : null, treasury: o.treasury, erc20Paymaster: o.erc20Paymaster ?? paymaster, paymaster, feeTokens,
   };
   return null;
 }
 
 export function createHppPaymaster(opts: { url: string; context?: HppPaymasterContext; fetch?: typeof fetch }) {
   const f = opts.fetch ?? fetch;
+  let ctx = opts.context;
   const quotes = new Map<string, HppFeeQuote>();
   const key = (a: string) => a.toLowerCase();
 
@@ -85,13 +91,23 @@ export function createHppPaymaster(opts: { url: string; context?: HppPaymasterCo
 
   return {
     url: opts.url,
-    context: opts.context,
+    get context() { return ctx; },
     /** Last quote seen for a sender (stub or final). Use after sendCalls to know what the op cost. */
     lastQuote(sender: Address): HppFeeQuote | undefined { return quotes.get(key(sender)); },
+    /**
+     * Pay fees in `token` from now on (one of the quote's `feeTokens`; null = the policy's default). Goes out as
+     * `context.feeToken` on every pm_* call. Cached quotes are dropped — the next stub re-prices in the new token.
+     */
+    setFeeToken(token: Address | null) {
+      if (!ctx) return;
+      const { feeToken: _drop, ...rest } = ctx;
+      ctx = token ? { ...rest, feeToken: token } : rest;
+      quotes.clear();
+    },
 
     async getPaymasterStubData(p: GetPaymasterStubDataParameters): Promise<GetPaymasterStubDataReturnType> {
       const { chainId, entryPointAddress, context, op } = split(p);
-      const r = await call("pm_getPaymasterStubData", [formatUserOperationRequest(op as never), entryPointAddress, toHex(chainId), { ...opts.context, ...context }]);
+      const r = await call("pm_getPaymasterStubData", [formatUserOperationRequest(op as never), entryPointAddress, toHex(chainId), { ...ctx, ...context }]);
       const q = parseQuote(r.hpp, r.paymaster as Address);
       if (q) quotes.set(key(op.sender as string), q);
       return {
@@ -105,7 +121,7 @@ export function createHppPaymaster(opts: { url: string; context?: HppPaymasterCo
       const { chainId, entryPointAddress, context, op } = split(p);
       const prev = quotes.get(key(op.sender as string));
       const quoted = prev?.mode === "token" ? { quotedRate: prev.exchangeRate.toString() } : {};
-      const r = await call("pm_getPaymasterData", [formatUserOperationRequest(op as never), entryPointAddress, toHex(chainId), { ...opts.context, ...context, ...quoted }]);
+      const r = await call("pm_getPaymasterData", [formatUserOperationRequest(op as never), entryPointAddress, toHex(chainId), { ...ctx, ...context, ...quoted }]);
       const q = parseQuote(r.hpp, r.paymaster as Address);
       if (q) quotes.set(key(op.sender as string), q.mode === "token" && prev?.mode === "token" ? { ...q, maxToken: q.maxToken ?? prev.maxToken } : q);
       return { paymaster: r.paymaster as Address, paymasterData: r.paymasterData as Hex };
