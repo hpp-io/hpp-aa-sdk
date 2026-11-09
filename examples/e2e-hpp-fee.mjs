@@ -1,31 +1,38 @@
-// HPP as the second fee token — live Sepolia e2e (hpp-bundler#72 stage G).
+// HPP as the second fee token — live e2e (hpp-bundler#72 stage G on Sepolia, stage H on mainnet with NETWORK=mainnet).
 //   One factory account (OWNER_KEY) under a sponsored_then_token policy with 1 free op and fee tokens [USDC.e, HPP]:
 //   1. deploy  = the free op (sponsored)
 //   2. quote   = setFeeToken(HPP) → quoteFee prints the HPP cap the account must hold
 //   3. charge  = ensureFeeAllowance({ token: HPP }) folds the approve into a 1-wei HPP transfer → charged in HPP
 //   STEP=address|deploy|quote|charge|all (default all; stops before "charge" when the HPP balance is below the cap).
-//   Env: OWNER_KEY, POLICY (hpp-fee-e2e), ANCHOR (anchor-hpp-fee-e2e), PAYMASTER_URL, RPC_URL.
+//   Env: NETWORK (sepolia|mainnet, default sepolia), OWNER_KEY, POLICY (hpp-fee-e2e), ANCHOR (anchor-hpp-fee-e2e), PAYMASTER_URL, RPC_URL.
+//   Mainnet uses real HPP: fund the printed account with a few HPP only, and sweep what is left afterwards.
 import { createPublicClient, http, encodeFunctionData, parseAbi, formatUnits, parseAbiItem } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { createHppAccount, hppSepolia } from "../dist/index.js";
+import { createHppAccount, hppMainnet, hppSepolia } from "../dist/index.js";
 
-const RPC = process.env.RPC_URL ?? "https://sepolia-node1.hpp.io";
-const PM_URL = process.env.PAYMASTER_URL ?? "https://aa-sepolia.hpp.io/rpc";
+const NETS = {
+  sepolia: { chain: hppSepolia, rpc: "https://sepolia-node1.hpp.io", pm: "https://aa-sepolia.hpp.io/rpc", hpp: "0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3", treasury: "0xba8A6B555A7A014A3822C962ea0Bd778EEb02f11" },
+  mainnet: { chain: hppMainnet, rpc: "https://mainnet-node1.hpp.io", pm: "https://aa.hpp.io/rpc", hpp: "0xB48334E7938367bC24Fe1F19000D6f06C622E6c7", treasury: "0x300C3E3f724e28e816704be36aAA88D818768DE3" },
+};
+const NET = NETS[process.env.NETWORK ?? "sepolia"];
+if (!NET) { console.error(`NETWORK must be one of ${Object.keys(NETS).join("|")}`); process.exit(1); }
+const RPC = process.env.RPC_URL ?? NET.rpc;
+const PM_URL = process.env.PAYMASTER_URL ?? NET.pm;
 const POLICY = process.env.POLICY ?? "hpp-fee-e2e", ANCHOR = process.env.ANCHOR ?? "anchor-hpp-fee-e2e";
-const HPP = "0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3", TREASURY = "0xba8A6B555A7A014A3822C962ea0Bd778EEb02f11";
+const HPP = NET.hpp, TREASURY = NET.treasury;
 const STEP = process.env.STEP ?? "all";
 if (!process.env.OWNER_KEY) { console.log("RESULT: SKIP (OWNER_KEY not set)"); process.exit(0); }
 
 const erc20 = parseAbi(["function balanceOf(address) view returns (uint256)", "function transfer(address,uint256) returns (bool)", "function allowance(address,address) view returns (uint256)"]);
-const pub = createPublicClient({ chain: hppSepolia, transport: http(RPC) });
+const pub = createPublicClient({ chain: NET.chain, transport: http(RPC) });
 const owner = privateKeyToAccount(process.env.OWNER_KEY);
-const user = await createHppAccount({ owner, chain: hppSepolia, bundlerUrl: PM_URL, rpcUrl: RPC, mode: "factory", paymaster: { policyId: POLICY, anchorId: ANCHOR } });
+const user = await createHppAccount({ owner, chain: NET.chain, bundlerUrl: PM_URL, rpcUrl: RPC, mode: "factory", paymaster: { policyId: POLICY, anchorId: ANCHOR } });
 const hppBal = () => pub.readContract({ address: HPP, abi: erc20, functionName: "balanceOf", args: [user.address] });
 const log = (k, v) => console.log(`${k}: ${typeof v === "string" ? v : JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x))}`);
 let fails = 0;
 const check = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? " — " + detail : ""}`); if (!ok) fails++; };
 
-log("account", { address: user.address, owner: owner.address, mode: user.mode, policy: POLICY });
+log("account", { network: process.env.NETWORK ?? "sepolia", chainId: NET.chain.id, address: user.address, owner: owner.address, mode: user.mode, policy: POLICY });
 if (STEP === "address") process.exit(0);
 
 // 1. deploy (free op)
